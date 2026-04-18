@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>声印 · 名字变前奏</title>
+  <style>
+    :root {
+      --phone-w: 390px;
+      --phone-h: 844px;
+      --radius-out: 44px;
+      --radius-in: 36px;
+      --bg: #0b0b0f;
+      --surface: #141418;
+      --accent: #d9c9a3;          /* 暖米金，主强调 */
+      --accent-soft: #a79574;
+      --accent-bg: rgba(217, 201, 163, 0.12);
+      --text: #f2efe8;
+      --muted: #8a8a95;
+      --border: #26262e;
+      --serif: "Cormorant Garamond", "Playfair Display", "Songti SC", "Noto Serif CJK SC", ui-serif, Georgia, serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background:
+        radial-gradient(ellipse 130% 80% at 50% -10%, #1d1a20 0%, var(--bg) 55%),
+        linear-gradient(180deg, #0b0b0f 0%, #09090c 100%);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+      color: var(--text);
+      padding: 24px 16px;
+    }
+    /* 外框：手机轮廓 */
+    .phone-shell {
+      width: var(--phone-w);
+      height: var(--phone-h);
+      max-height: calc(100vh - 48px);
+      background: linear-gradient(145deg, #2a2a32 0%, #121218 100%);
+      border-radius: var(--radius-out);
+      padding: 12px;
+      box-shadow:
+        0 24px 80px rgba(0,0,0,.55),
+        inset 0 1px 0 rgba(255,255,255,.06);
+      flex-shrink: 0;
+    }
+    .phone-screen {
+      width: 100%;
+      height: 100%;
+      border-radius: var(--radius-in);
+      background: var(--surface);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      position: relative;
+    }
+    .notch {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 120px;
+      height: 28px;
+      background: #0a0a0d;
+      border-radius: 0 0 18px 18px;
+      z-index: 2;
+    }
+    .scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 48px 22px 28px;
+      -webkit-overflow-scrolling: touch;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-size: 1.9rem;
+      font-weight: 500;
+      margin: 0 0 8px;
+      letter-spacing: 0.02em;
+      color: var(--text);
+    }
+    h1::after {
+      content: "";
+      display: block;
+      width: 28px;
+      height: 1px;
+      background: var(--accent);
+      margin-top: 10px;
+      opacity: 0.8;
+    }
+    .sub {
+      font-size: 0.82rem;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .sub strong { color: var(--accent); font-weight: 500; }
+    label {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #12121a;
+      color: var(--text);
+      font-size: 1.05rem;
+      outline: none;
+    }
+    input[type="text"]:focus {
+      border-color: var(--accent-soft);
+      box-shadow: 0 0 0 3px rgba(217, 201, 163, 0.15);
+    }
+    .btn {
+      width: 100%;
+      margin-top: 20px;
+      padding: 14px;
+      border: 1px solid var(--accent-soft);
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      letter-spacing: 0.22em;
+      color: var(--bg);
+      background: linear-gradient(135deg, #ecdcb5 0%, var(--accent) 100%);
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(217, 201, 163, 0.14);
+      text-transform: uppercase;
+      transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(217, 201, 163, 0.22); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+
+    /* 风格选择：收拢为下拉触发器 + 弹出面板（3 列网格） */
+    .style-select {
+      position: relative;
+      margin-top: 10px;
+    }
+    .style-trigger {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #12121a;
+      color: var(--text);
+      font-size: 0.95rem;
+      cursor: pointer;
+      user-select: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .style-trigger:hover { border-color: var(--accent-soft); }
+    .style-trigger.open {
+      border-color: var(--accent-soft);
+      box-shadow: 0 0 0 3px rgba(217, 201, 163, 0.15);
+    }
+    .style-trigger[data-disabled="1"] {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .style-trigger .label {
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+    .style-trigger .caret {
+      width: 7px; height: 7px;
+      border-right: 1.5px solid var(--accent);
+      border-bottom: 1.5px solid var(--accent);
+      transform: rotate(45deg);
+      transition: transform 0.2s ease;
+      margin-bottom: 2px;
+    }
+    .style-trigger.open .caret { transform: rotate(-135deg); margin-bottom: -2px; }
+    .style-panel {
+      position: absolute;
+      left: 0; right: 0;
+      top: calc(100% + 6px);
+      z-index: 20;
+      padding: 10px;
+      border-radius: 16px;
+      background: #14141c;
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 44px rgba(0,0,0,0.5);
+      display: none;
+    }
+    .style-panel.open {
+      display: block;
+      animation: styleIn 0.15s ease;
+    }
+    @keyframes styleIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .pills {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .pill {
+      padding: 10px 6px;
+      text-align: center;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #0f0f16;
+      color: var(--muted);
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .pill:hover { color: var(--text); }
+    .pill.active {
+      background: var(--accent-bg);
+      color: var(--accent);
+      border-color: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent-soft);
+    }
+    .pill[disabled], .pill[data-disabled="1"] {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    /* 人声开关：行内 label + iOS 风 toggle */
+    .option-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #12121a;
+    }
+    .option-main {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .option-label {
+      font-size: 0.9rem;
+      color: var(--text);
+      letter-spacing: 0.02em;
+    }
+    .option-sub {
+      font-size: 0.68rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .toggle {
+      width: 42px;
+      height: 24px;
+      border-radius: 999px;
+      background: #1a1a22;
+      border: 1px solid var(--border);
+      position: relative;
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+    .toggle .knob {
+      position: absolute;
+      top: 50%;
+      left: 3px;
+      transform: translateY(-50%);
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #5a5867;
+      transition: left 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    }
+    .toggle.on {
+      background: var(--accent-bg);
+      border-color: var(--accent-soft);
+    }
+    .toggle.on .knob {
+      left: 21px;
+      background: var(--accent);
+      box-shadow: 0 0 10px rgba(217, 201, 163, 0.55);
+    }
+    .toggle[data-disabled="1"] {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    /* 结果卡：前奏可视化 + 播放器 合并成同一块"专属唱片面" */
+    .result {
+      margin-top: 22px;
+      padding: 22px 20px 18px;
+      border-radius: 20px;
+      background:
+        radial-gradient(120% 140% at 50% -30%, rgba(217, 201, 163, 0.08) 0%, transparent 60%),
+        linear-gradient(180deg, #15151a 0%, #0e0e12 100%);
+      border: 1px solid var(--border);
+      position: relative;
+    }
+    .result[hidden] { display: none; }
+    .result-caption {
+      font-size: 0.68rem;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: center;
+      margin-bottom: 4px;
+    }
+    .result-caption strong {
+      color: var(--accent);
+      font-weight: 500;
+      letter-spacing: 0.12em;
+    }
+    .result-divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(217,201,163,0.22), transparent);
+      margin: 18px 0 14px;
+    }
+    .intro-card { transition: opacity 0.4s ease; }
+    .intro-card.inactive { opacity: 0.45; }
+    .intro-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-size: 0.62rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      margin-bottom: 14px;
+    }
+    .intro-head .dot {
+      display: inline-block;
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--accent);
+      margin-right: 8px;
+      box-shadow: 0 0 8px var(--accent);
+      transform: translateY(-1px);
+    }
+    /* 累积字母条：LUCAS 按播放进度逐一亮起 */
+    .intro-word {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 2.65rem;
+      line-height: 1;
+      letter-spacing: 0.16em;
+      text-align: center;
+      display: flex;
+      justify-content: center;
+      gap: 0.06em;
+      min-height: 1.1em;
+      padding: 6px 0 10px;
+      font-feature-settings: "ss01", "liga";
+      transition: font-size 0.3s ease;
+    }
+    /* 超过 5 个字母时收紧排版（保留给未来超长名字用），避免撑破手机宽度 */
+    .intro-word.dense {
+      font-size: 1.65rem;
+      letter-spacing: 0.09em;
+      gap: 0.12em;
+    }
+    /* 词组模式：像『Mission: Impossible』这样的固定短语，小写字母细弱、只放大首字母 M / I */
+    .intro-word.phrase {
+      font-size: 1.35rem;
+      letter-spacing: 0.015em;
+      font-style: italic;
+      align-items: baseline;
+      padding: 22px 0 14px;
+      gap: 0;
+      flex-wrap: nowrap;
+    }
+    .intro-word.phrase span {
+      color: rgba(242, 239, 232, 0.3);
+      transform: none;
+      display: inline-block;
+      transition: color 0.45s ease, text-shadow 0.45s ease, transform 0.45s ease;
+    }
+    .intro-word.phrase span.space {
+      width: 0.45em;
+    }
+    /* 首字母 —— 放大、不斜体、比例放大，方便做"发光跳动"动画 */
+    .intro-word.phrase span.hero {
+      font-size: 2.45rem;
+      font-style: normal;
+      font-weight: 500;
+      letter-spacing: 0;
+      line-height: 1;
+      color: rgba(242, 239, 232, 0.55);
+      margin: 0 0.08em;
+    }
+    .intro-word.phrase span.hero.played {
+      color: rgba(242, 239, 232, 0.9);
+    }
+    .intro-word.phrase span.hero.current {
+      color: var(--accent);
+      text-shadow: 0 0 22px rgba(217, 201, 163, 0.6);
+      transform: translateY(-2px) scale(1.06);
+    }
+    .intro-word span {
+      display: inline-block;
+      color: rgba(242, 239, 232, 0.08);
+      transform: translateY(4px);
+      transition:
+        color 0.45s ease,
+        transform 0.45s cubic-bezier(.2,.7,.2,1),
+        text-shadow 0.45s ease,
+        opacity 0.45s ease;
+    }
+    .intro-word span.played {
+      color: rgba(242, 239, 232, 0.78);
+      transform: translateY(0);
+    }
+    .intro-word span.current {
+      color: var(--accent);
+      transform: translateY(-2px) scale(1.06);
+      text-shadow: 0 0 18px rgba(217, 201, 163, 0.35);
+    }
+    /* 当前字母的摩斯点划，轻量副标题 */
+    .intro-morse {
+      font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+      font-size: 0.95rem;
+      color: var(--accent);
+      opacity: 0.85;
+      min-height: 1.5em;
+      transition: opacity 0.3s ease;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.55em;
+      letter-spacing: 0;
+    }
+    .intro-morse.dim { opacity: 0.32; }
+    /* 每个点/划都用独立 span。5 个视觉原型由外部 className 指定。 */
+    .intro-morse .sym {
+      display: inline-block;
+      opacity: 0;
+      will-change: transform, opacity, text-shadow, filter;
+    }
+    /* 停顿时直接静态显示，不重播动画，避免视觉噪声 */
+    .intro-morse.dim .sym,
+    .intro-morse.dim .sym::after {
+      animation: none !important;
+      opacity: 1;
+      transform: none;
+      text-shadow: none;
+      filter: none;
+    }
+    .intro-morse.dim .sym::after { opacity: 0; }
+
+    /* —— 原型 1：bloom —— 柔和泛起 + 金色光晕缓收（木琴 / 玻璃铃） */
+    .intro-morse .sym.bloom {
+      animation: morseBloom 0.65s cubic-bezier(0.22, 1.1, 0.36, 1) forwards;
+    }
+    @keyframes morseBloom {
+      0%   { opacity: 0; transform: translateY(14px) scale(0.4);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); filter: blur(3px); }
+      35%  { opacity: 1; transform: translateY(-4px) scale(1.35);
+             text-shadow: 0 0 26px rgba(217, 201, 163, 0.95),
+                          0 0 8px rgba(255, 240, 200, 0.8); filter: blur(0); }
+      65%  { transform: translateY(0) scale(1.04);
+             text-shadow: 0 0 16px rgba(217, 201, 163, 0.55); }
+      100% { opacity: 1; transform: translateY(0) scale(1);
+             text-shadow: 0 0 10px rgba(217, 201, 163, 0.35); }
+    }
+
+    /* —— 原型 2：hit —— 砸落 + 同心金环涟漪（太鼓 / 定音鼓 / sub kick / tape kick） */
+    .intro-morse .sym.hit {
+      position: relative;
+      animation: morseHit 0.7s cubic-bezier(0.24, 0.9, 0.22, 1) forwards;
+    }
+    .intro-morse .sym.hit::after {
+      content: "";
+      position: absolute;
+      left: 50%; top: 55%;
+      width: 1.1em; height: 1.1em;
+      border: 1.2px solid rgba(217, 201, 163, 0.85);
+      border-radius: 50%;
+      transform: translate(-50%, -50%) scale(0.25);
+      opacity: 0;
+      /* 涟漪放慢到 1.6s，后一个鼓点落下时前一圈还在扩散 */
+      animation: morseRipple 1.6s cubic-bezier(0.22, 0.55, 0.28, 1) forwards;
+      pointer-events: none;
+    }
+    @keyframes morseHit {
+      0%   { opacity: 0; transform: translateY(-6px) scale(1.7);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); filter: blur(1.5px); }
+      8%   { opacity: 1; transform: translateY(0) scale(1.45);
+             text-shadow: 0 0 30px rgba(255, 248, 225, 1),
+                          0 0 14px rgba(255, 238, 200, 0.9); filter: blur(0); }
+      22%  { transform: translateY(1px) scale(0.82);
+             text-shadow: 0 0 14px rgba(217, 201, 163, 0.55); }
+      45%  { transform: translateY(0) scale(1.08);
+             text-shadow: 0 0 12px rgba(217, 201, 163, 0.45); }
+      100% { opacity: 1; transform: translateY(0) scale(1);
+             text-shadow: 0 0 8px rgba(217, 201, 163, 0.3); }
+    }
+    @keyframes morseRipple {
+      0%   { opacity: 0;    transform: translate(-50%, -50%) scale(0.22); border-width: 1.8px; }
+      8%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.45); border-width: 1.6px; }
+      40%  { opacity: 0.55; transform: translate(-50%, -50%) scale(1.35); border-width: 1.2px; }
+      75%  { opacity: 0.22; transform: translate(-50%, -50%) scale(2.4);  border-width: 0.8px; }
+      100% { opacity: 0;    transform: translate(-50%, -50%) scale(3.3);  border-width: 0.4px; }
+    }
+
+    /* —— 原型 3：crisp —— 极短一闪 + 轻微抖动（镲 / 鼓边 / 拍手 / 刷 / 木鱼） */
+    .intro-morse .sym.crisp {
+      animation: morseCrisp 0.42s cubic-bezier(0.3, 1.1, 0.4, 1) forwards;
+    }
+    @keyframes morseCrisp {
+      0%   { opacity: 0; transform: scale(0.85);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); filter: blur(0.6px); }
+      14%  { opacity: 1; transform: scale(1.2);
+             text-shadow: 0 0 16px rgba(255, 245, 215, 0.95); filter: blur(0); }
+      32%  { transform: translateX(0.8px) scale(0.96);
+             text-shadow: 0 0 6px rgba(217, 201, 163, 0.45); }
+      55%  { transform: translateX(-0.6px) scale(1.03); }
+      80%  { transform: translateX(0.2px) scale(1); }
+      100% { opacity: 1; transform: translateX(0) scale(1);
+             text-shadow: 0 0 5px rgba(217, 201, 163, 0.28); }
+    }
+
+    /* —— 原型 4：pixel —— 阶梯式硬切，chiptune 感（方波） */
+    .intro-morse .sym.pixel {
+      font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+      animation: morsePixel 0.52s steps(6, end) forwards;
+    }
+    @keyframes morsePixel {
+      0%   { opacity: 0;   transform: scale(0.55);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); }
+      16%  { opacity: 1;   transform: scale(1.3);
+             text-shadow: 2px 0 0 rgba(217, 201, 163, 0.7),
+                         -2px 0 0 rgba(120, 200, 160, 0.4); }
+      33%  { opacity: 0.4; transform: scale(0.8);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); }
+      50%  { opacity: 1;   transform: scale(1.12);
+             text-shadow: 1px 0 0 rgba(217, 201, 163, 0.6); }
+      66%  { opacity: 0.7; transform: scale(0.95); }
+      83%  { opacity: 1;   transform: scale(1.04);
+             text-shadow: 0 0 4px rgba(217, 201, 163, 0.45); }
+      100% { opacity: 1;   transform: scale(1);
+             text-shadow: 0 0 3px rgba(217, 201, 163, 0.3); }
+    }
+
+    /* —— 原型 5：pluck —— 琴弦被拨的横向震颤 + 余震（贝斯拨弦 / slap bass） */
+    .intro-morse .sym.pluck {
+      animation: morsePluck 0.9s cubic-bezier(0.25, 0.8, 0.3, 1) forwards;
+    }
+    @keyframes morsePluck {
+      0%   { opacity: 0; transform: translateX(0) scaleX(1.3) scaleY(0.8);
+             text-shadow: 0 0 0 rgba(217, 201, 163, 0); }
+      10%  { opacity: 1; transform: translateX(2.5px) scaleX(1.08) scaleY(0.96);
+             text-shadow: 0 0 14px rgba(217, 201, 163, 0.75); }
+      24%  { transform: translateX(-2.2px) scaleX(0.95) scaleY(1.06);
+             text-shadow: 0 0 10px rgba(217, 201, 163, 0.55); }
+      40%  { transform: translateX(1.5px) scaleX(1.03) scaleY(0.98); }
+      55%  { transform: translateX(-1px); }
+      70%  { transform: translateX(0.5px); }
+      85%  { transform: translateX(-0.2px); }
+      100% { opacity: 1; transform: translateX(0) scale(1);
+             text-shadow: 0 0 6px rgba(217, 201, 163, 0.3); }
+    }
+    /* 进度发丝线 + 小圆点 */
+    .intro-progress {
+      margin-top: 18px;
+      position: relative;
+      height: 14px;
+    }
+    .intro-progress .track {
+      position: absolute;
+      left: 0; right: 0; top: 50%;
+      height: 1px;
+      background: rgba(217, 201, 163, 0.18);
+    }
+    .intro-progress .fill {
+      position: absolute;
+      left: 0; top: 50%;
+      height: 1px;
+      width: 0%;
+      background: linear-gradient(90deg, rgba(217,201,163,0.6), var(--accent));
+      transition: width 0.08s linear;
+    }
+    .intro-progress .cursor {
+      position: absolute;
+      top: 50%;
+      left: 0%;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px var(--accent);
+      transform: translate(-50%, -50%);
+      transition: left 0.08s linear;
+    }
+    .status {
+      margin-top: 14px;
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+      min-height: 1.4em;
+      color: var(--accent);
+      text-align: center;
+      opacity: 0.85;
+    }
+    .status.err { color: #ff8080; opacity: 1; }
+    .status.loading::after {
+      content: "";
+      display: inline-block;
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: var(--accent);
+      margin-left: 6px;
+      animation: statusPulse 1.2s ease-in-out infinite;
+      vertical-align: middle;
+    }
+    @keyframes statusPulse {
+      0%, 100% { opacity: 0.2; transform: scale(0.8); }
+      50%      { opacity: 1;   transform: scale(1.15); }
+    }
+    audio {
+      width: 100%;
+      margin-top: 2px;
+      border-radius: 12px;
+      color-scheme: dark;
+    }
+    .hint {
+      margin-top: 18px;
+      font-size: 0.72rem;
+      color: var(--muted);
+      line-height: 1.55;
+      text-align: center;
+      opacity: 0.7;
+    }
+    .hint[hidden] { display: none; }
+
+    /* 示例条：碟中谍主题曲，让用户先感受『摩斯藏在前奏里』的妙用 */
+    .demo-card {
+      margin-top: 18px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px dashed rgba(217, 201, 163, 0.35);
+      background: rgba(217, 201, 163, 0.04);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .demo-card-main { flex: 1; min-width: 0; }
+    .demo-card-title {
+      font-size: 0.78rem;
+      color: var(--text);
+      letter-spacing: 0.02em;
+      margin-bottom: 2px;
+    }
+    .demo-card-title strong {
+      color: var(--accent);
+      font-weight: 500;
+    }
+    .demo-card-sub {
+      font-size: 0.66rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+    .demo-btn {
+      flex-shrink: 0;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--accent-soft);
+      background: transparent;
+      color: var(--accent);
+      font-size: 0.72rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .demo-btn:hover { background: var(--accent-bg); transform: translateY(-1px); }
+    .demo-btn[data-disabled="1"] { opacity: 0.45; pointer-events: none; }
+
+    @media (max-height: 780px) {
+      :root {
+        --phone-h: 720px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="phone-shell" aria-label="手机预览框">
+    <div class="phone-screen">
+      <div class="notch" aria-hidden="true"></div>
+      <div class="scroll">
+        <h1>声印</h1>
+        <p class="sub">一个词，一首歌。前奏里，一段<strong>摩斯暗号</strong>替你落款。</p>
+
+        <div class="demo-card">
+          <div class="demo-card-main">
+            <div class="demo-card-title">听过 <strong>碟中谍</strong> 主题曲吗？</div>
+            <div class="demo-card-sub">前奏里，藏着 M（−−）I（··）</div>
+          </div>
+          <button type="button" class="demo-btn" id="demoBtn">先听示例</button>
+        </div>
+
+        <label for="word" style="margin-top:18px">你的词</label>
+        <input id="word" type="text" placeholder="例如 Lucas / love / home" autocomplete="off" maxlength="32" />
+
+        <label for="styleTrigger" style="margin-top:14px">选择风格</label>
+        <div class="style-select" id="styleSelect">
+          <div class="style-trigger" id="styleTrigger" role="button"
+               aria-haspopup="listbox" aria-expanded="false" tabindex="0">
+            <span class="label" id="styleTriggerLabel">—</span>
+            <span class="caret" aria-hidden="true"></span>
+          </div>
+          <div class="style-panel" id="stylePanel" role="listbox">
+            <div class="pills" id="styles" aria-label="风格"></div>
+          </div>
+        </div>
+
+        <div class="option-row">
+          <div class="option-main">
+            <span class="option-label">加入人声演唱</span>
+            <span class="option-sub">关闭则生成纯器乐版本</span>
+          </div>
+          <button type="button" class="toggle" id="vocalToggle"
+                  role="switch" aria-checked="false" aria-label="加入人声">
+            <span class="knob"></span>
+          </button>
+        </div>
+
+        <button type="button" class="btn" id="go">生成我的歌</button>
+
+        <p class="status" id="status"></p>
+
+        <div class="result" id="result" hidden>
+          <div class="result-caption">
+            为 <strong id="resultWord">—</strong> · <span id="resultStyle">—</span>
+          </div>
+          <div class="intro-card" id="introCard">
+            <div class="intro-head">
+              <span><span class="dot"></span>前奏 · 摩斯暗号</span>
+              <span id="introTime">0.0s / 0.0s</span>
+            </div>
+            <div class="intro-word" id="introWord" aria-live="polite"></div>
+            <div class="intro-morse" id="introMorse">·−</div>
+            <div class="intro-progress">
+              <div class="track"></div>
+              <div class="fill" id="introFill"></div>
+              <div class="cursor" id="introCursor"></div>
+            </div>
+          </div>
+          <div class="result-divider"></div>
+          <audio id="player" controls preload="none"></audio>
+        </div>
+
+        <p class="hint" id="hint">首次生成通常需要 1–3 分钟。</p>
+      </div>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const btn = $("go");
+    const demoBtn = $("demoBtn");
+    const statusEl = $("status");
+    const player = $("player");
+    const resultEl = $("result");
+    const resultWord = $("resultWord");
+    const resultStyle = $("resultStyle");
+    const hintEl = $("hint");
+    const pillsEl = $("styles");
+    const styleTrigger = $("styleTrigger");
+    const styleTriggerLabel = $("styleTriggerLabel");
+    const stylePanel = $("stylePanel");
+    const vocalToggle = $("vocalToggle");
+    const introCard = $("introCard");
+    const introWord = $("introWord");
+    const introMorse = $("introMorse");
+    const introFill = $("introFill");
+    const introCursor = $("introCursor");
+    const introTime = $("introTime");
+
+    const state = {
+      styles: [],
+      selectedStyle: null,
+      withVocals: false,
+      timeline: [],
+      introMs: 0,
+      displayPhrase: null, // 非空 → "词组模式"（例如 Mission Impossible）
+      dotEffect: null,     // 当前风格下 dot · 的视觉原型（bloom / hit / crisp / pixel / pluck）
+      dashEffect: null,    // 当前风格下 dash − 的视觉原型
+      morseSig: null,      // 用来判断摩斯符号是否要重绘（避免每帧抖动）
+      raf: null,
+    };
+
+    function setVocal(on) {
+      state.withVocals = !!on;
+      vocalToggle.classList.toggle("on", state.withVocals);
+      vocalToggle.setAttribute("aria-checked", state.withVocals ? "true" : "false");
+    }
+    vocalToggle.addEventListener("click", () => {
+      if (vocalToggle.dataset.disabled === "1") return;
+      setVocal(!state.withVocals);
+    });
+    vocalToggle.addEventListener("keydown", (e) => {
+      if (vocalToggle.dataset.disabled === "1") return;
+      if (e.key === " " || e.key === "Enter") {
+        e.preventDefault();
+        setVocal(!state.withVocals);
+      }
+    });
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text || "";
+      statusEl.classList.toggle("err", kind === "err");
+      statusEl.classList.toggle("loading", kind === "loading");
+    }
+
+    function updateTriggerLabel() {
+      const cur = state.styles.find((s) => s.id === state.selectedStyle);
+      styleTriggerLabel.textContent = cur ? cur.label : "—";
+    }
+
+    function renderPills() {
+      pillsEl.innerHTML = "";
+      state.styles.forEach((s) => {
+        const el = document.createElement("div");
+        el.className = "pill";
+        el.setAttribute("role", "option");
+        el.textContent = s.label;
+        el.dataset.id = s.id;
+        if (s.id === state.selectedStyle) el.classList.add("active");
+        el.addEventListener("click", () => {
+          if (el.dataset.disabled === "1") return;
+          state.selectedStyle = s.id;
+          renderPills();
+          updateTriggerLabel();
+          closeStylePanel();
+        });
+        pillsEl.appendChild(el);
+      });
+    }
+
+    function openStylePanel() {
+      stylePanel.classList.add("open");
+      styleTrigger.classList.add("open");
+      styleTrigger.setAttribute("aria-expanded", "true");
+    }
+    function closeStylePanel() {
+      stylePanel.classList.remove("open");
+      styleTrigger.classList.remove("open");
+      styleTrigger.setAttribute("aria-expanded", "false");
+    }
+    function toggleStylePanel() {
+      if (stylePanel.classList.contains("open")) closeStylePanel();
+      else openStylePanel();
+    }
+
+    styleTrigger.addEventListener("click", (e) => {
+      if (styleTrigger.dataset.disabled === "1") return;
+      e.stopPropagation();
+      toggleStylePanel();
+    });
+    styleTrigger.addEventListener("keydown", (e) => {
+      if (styleTrigger.dataset.disabled === "1") return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggleStylePanel();
+      } else if (e.key === "Escape") {
+        closeStylePanel();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (!stylePanel.classList.contains("open")) return;
+      if (stylePanel.contains(e.target) || styleTrigger.contains(e.target)) return;
+      closeStylePanel();
+    });
+
+    function setPillsDisabled(disabled) {
+      styleTrigger.dataset.disabled = disabled ? "1" : "0";
+      vocalToggle.dataset.disabled = disabled ? "1" : "0";
+      demoBtn.dataset.disabled = disabled ? "1" : "0";
+      if (disabled) closeStylePanel();
+      [...pillsEl.children].forEach((el) => {
+        el.dataset.disabled = disabled ? "1" : "0";
+      });
+    }
+
+    async function loadStyles() {
+      try {
+        const res = await fetch("/api/styles");
+        const data = await res.json();
+        state.styles = data.styles || [];
+        if (state.styles.length) state.selectedStyle = state.styles[0].id;
+        renderPills();
+        updateTriggerLabel();
+      } catch (e) {
+        // 拉失败就留空，服务端会用默认风格
+        console.warn("styles load failed", e);
+      }
+    }
+
+    function formatSec(ms) {
+      return (Math.max(0, ms) / 1000).toFixed(1) + "s";
+    }
+
+    function buildWordSpans(tl, phrase) {
+      introWord.innerHTML = "";
+      introWord.classList.remove("dense", "phrase");
+
+      if (phrase) {
+        // 词组模式：渲染短语里每个字符；时间轴中的 hero_idx 字符放大
+        introWord.classList.add("phrase");
+        const heroSet = new Set(
+          tl.map((iv) => iv.hero_idx).filter((x) => typeof x === "number")
+        );
+        for (let i = 0; i < phrase.length; i++) {
+          const ch = phrase[i];
+          const s = document.createElement("span");
+          s.textContent = ch === " " ? " " : ch;
+          s.dataset.idx = String(i);
+          if (ch === " ") s.classList.add("space");
+          if (heroSet.has(i)) s.classList.add("hero");
+          introWord.appendChild(s);
+        }
+        return;
+      }
+
+      introWord.classList.toggle("dense", tl.length > 5);
+      tl.forEach((iv, i) => {
+        const s = document.createElement("span");
+        s.textContent = (iv.letter || "").toUpperCase();
+        s.dataset.idx = String(i);
+        introWord.appendChild(s);
+      });
+    }
+
+    /** 把摩斯字符串拆成独立 span，触发逐个"敲击落位"的动画。
+     *  dotEff / dashEff 是后端按风格音色查表给的视觉原型 id：
+     *    bloom | hit | crisp | pixel | pluck
+     *  每个符号的 animation-delay 按它自己所属原型的"节奏"累加，
+     *  这样 hit 段之间留足 220ms 给涟漪扩散，crisp 则紧凑到 60ms。
+     */
+    const MORSE_EFFECT_STAGGER = {
+      bloom: 95,
+      hit: 220,
+      crisp: 60,
+      pixel: 80,
+      pluck: 140,
+    };
+
+    function pickEffect(ch, dotEff, dashEff) {
+      if (ch === "·" || ch === ".") return dotEff || "bloom";
+      if (ch === "−" || ch === "-") return dashEff || "bloom";
+      return "bloom";
+    }
+
+    function setMorseSymbols(morse, dotEff, dashEff) {
+      introMorse.innerHTML = "";
+      if (!morse) return;
+      let delay = 0;
+      for (let i = 0; i < morse.length; i++) {
+        const ch = morse[i];
+        const eff = pickEffect(ch, dotEff, dashEff);
+        const s = document.createElement("span");
+        s.className = "sym " + eff;
+        s.textContent = ch;
+        s.style.animationDelay = delay + "ms";
+        introMorse.appendChild(s);
+        delay += MORSE_EFFECT_STAGGER[eff] || 95;
+      }
+    }
+
+    function findCurrentIndex(tl, ms, introMs) {
+      if (!tl.length) return -1;
+      // 从后往前找：第一个 start_ms <= ms 的即为当前
+      for (let i = tl.length - 1; i >= 0; i--) {
+        if (ms >= tl[i].start_ms) return i;
+      }
+      return -1;
+    }
+
+    function tick() {
+      if (!state.timeline.length || !player.duration) {
+        state.raf = requestAnimationFrame(tick);
+        return;
+      }
+      const ms = player.currentTime * 1000;
+      const introMs = state.introMs;
+
+      // 进度条与时间
+      const ratio = Math.min(Math.max(ms / introMs, 0), 1);
+      introFill.style.width = (ratio * 100).toFixed(2) + "%";
+      introCursor.style.left = (ratio * 100).toFixed(2) + "%";
+      introTime.textContent = formatSec(Math.min(ms, introMs)) + " / " + formatSec(introMs);
+
+      if (ms > introMs + 200) {
+        introCard.classList.add("inactive");
+      } else {
+        introCard.classList.remove("inactive");
+      }
+
+      // 字母累积高亮
+      const idx = findCurrentIndex(state.timeline, ms, introMs);
+      const spans = introWord.children;
+      if (state.displayPhrase) {
+        // 词组模式：根据 hero_idx 把 M / I 标为 played/current，非首字母保持静态暗色
+        for (let i = 0; i < spans.length; i++) {
+          spans[i].classList.remove("played", "current");
+        }
+        for (let i = 0; i <= idx; i++) {
+          const hi = state.timeline[i] && state.timeline[i].hero_idx;
+          if (typeof hi !== "number") continue;
+          const span = spans[hi];
+          if (span) span.classList.add("played");
+        }
+        if (idx >= 0) {
+          const curHi = state.timeline[idx].hero_idx;
+          if (typeof curHi === "number" && spans[curHi]) {
+            spans[curHi].classList.remove("played");
+            spans[curHi].classList.add("current");
+          }
+        }
+      } else {
+        for (let i = 0; i < spans.length; i++) {
+          spans[i].classList.remove("played", "current");
+          if (i < idx) spans[i].classList.add("played");
+          else if (i === idx) spans[i].classList.add("current");
+        }
+      }
+
+      // 当前字母摩斯（敲击段高亮 + 点划逐个落位，停顿段淡化）
+      if (idx >= 0) {
+        const cur = state.timeline[idx];
+        const morse = cur.morse_pretty || cur.morse || "";
+        const dotEff = cur.dot_effect || state.dotEffect || "bloom";
+        const dashEff = cur.dash_effect || state.dashEffect || "bloom";
+        const sig = idx + ":" + morse + ":" + dotEff + ":" + dashEff;
+        if (state.morseSig !== sig) {
+          state.morseSig = sig;
+          setMorseSymbols(morse, dotEff, dashEff);
+        }
+        introMorse.classList.toggle("dim", ms > cur.end_ms);
+      } else if (state.timeline.length) {
+        const first = state.timeline[0];
+        const morse0 = first.morse_pretty || first.morse || "";
+        const dotEff = first.dot_effect || state.dotEffect || "bloom";
+        const dashEff = first.dash_effect || state.dashEffect || "bloom";
+        const sig = "init:" + morse0 + ":" + dotEff + ":" + dashEff;
+        if (state.morseSig !== sig) {
+          state.morseSig = sig;
+          setMorseSymbols(morse0, dotEff, dashEff);
+        }
+        introMorse.classList.add("dim");
+      }
+      state.raf = requestAnimationFrame(tick);
+    }
+
+    function startTicker() {
+      if (state.raf) cancelAnimationFrame(state.raf);
+      state.raf = requestAnimationFrame(tick);
+    }
+
+    /** 把后端返回（或示例）的数据渲染到结果卡并开始播放。 */
+    function renderResult(data) {
+      const word = (data.word || "").toUpperCase() || "—";
+      let styleText = data.style_label || "—";
+      if (data.demo) {
+        styleText = data.style_label + " · 示例";
+      } else if (data.with_vocals) {
+        styleText = data.style_label + " · 含人声";
+      } else {
+        styleText = data.style_label + " · 纯器乐";
+      }
+      resultWord.textContent = word;
+      resultStyle.textContent = styleText;
+
+      state.timeline = data.letter_timeline || [];
+      state.introMs = data.intro_duration_ms || 0;
+      state.displayPhrase = data.display_phrase || null;
+      state.dotEffect = data.dot_effect || null;
+      state.dashEffect = data.dash_effect || null;
+
+      resultEl.hidden = false;
+      hintEl.hidden = true;
+      setStatus("");
+
+      if (state.timeline.length && state.introMs > 0) {
+        buildWordSpans(state.timeline, state.displayPhrase);
+        const first0 = state.timeline[0];
+        const morse0 = first0.morse_pretty || first0.morse || "";
+        const dotEff0 = first0.dot_effect || state.dotEffect || "bloom";
+        const dashEff0 = first0.dash_effect || state.dashEffect || "bloom";
+        state.morseSig = "init:" + morse0 + ":" + dotEff0 + ":" + dashEff0;
+        setMorseSymbols(morse0, dotEff0, dashEff0);
+        introMorse.classList.add("dim");
+        introFill.style.width = "0%";
+        introCursor.style.left = "0%";
+        introTime.textContent = "0.0s / " + formatSec(state.introMs);
+        startTicker();
+      }
+
+      const url = data.audio_url + (data.audio_url.includes("?") ? "&" : "?") + "t=" + Date.now();
+      player.src = url;
+      player.play().catch(() => {});
+    }
+
+    demoBtn.addEventListener("click", async () => {
+      if (demoBtn.dataset.disabled === "1") return;
+      demoBtn.dataset.disabled = "1";
+      setStatus("加载示例", "loading");
+      try {
+        const res = await fetch("/api/demo");
+        if (!res.ok) throw new Error("示例加载失败");
+        const data = await res.json();
+        renderResult(data);
+      } catch (e) {
+        setStatus(String(e.message || e), "err");
+      } finally {
+        demoBtn.dataset.disabled = "0";
+      }
+    });
+
+    btn.addEventListener("click", async () => {
+      const word = $("word").value.trim();
+      if (!word) {
+        setStatus("请先输入单词。", "err");
+        return;
+      }
+      btn.disabled = true;
+      setPillsDisabled(true);
+      setStatus("正在为你谱曲", "loading");
+      player.removeAttribute("src");
+      resultEl.hidden = true;
+      introCard.classList.remove("inactive");
+      introFill.style.width = "0%";
+      introCursor.style.left = "0%";
+      introWord.innerHTML = "";
+
+      try {
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            word,
+            style: state.selectedStyle,
+            with_vocals: state.withVocals,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const d = data.detail;
+          const rawMsg =
+            typeof d === "string"
+              ? d
+              : Array.isArray(d)
+                ? d.map((x) => x.msg || x).join("；")
+                : res.statusText || "";
+          let friendly = "暂时没能生成，请稍后再试。";
+          if (/仅支持英文字母|仅字母|A-Z|长度/.test(rawMsg)) {
+            friendly = "请输入 1–10 个英文字母（A–Z）。";
+          } else if (/填写单词|word/i.test(rawMsg)) {
+            friendly = "请先输入你的词。";
+          } else if (/限流|1002/.test(rawMsg)) {
+            friendly = "现在用的人有点多，请稍后再试一次。";
+          } else if (/余额|1008/.test(rawMsg)) {
+            friendly = "服务暂时不可用，请稍后再试。";
+          } else if (/敏感|违规|1026/.test(rawMsg)) {
+            friendly = "换一个词试试吧～";
+          }
+          throw new Error(friendly);
+        }
+
+        renderResult(data);
+      } catch (e) {
+        setStatus(String(e.message || e), "err");
+      } finally {
+        btn.disabled = false;
+        setPillsDisabled(false);
+      }
+    });
+
+    player.addEventListener("seeked", () => {
+      // 用户拖动后，保证 tick 立刻更新
+      if (!state.raf) startTicker();
+    });
+    player.addEventListener("play", () => {
+      if (!state.raf) startTicker();
+    });
+
+    loadStyles();
+  </script>
+</body>
+</html>

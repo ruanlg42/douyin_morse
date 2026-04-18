@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+*.pyc
+__pycache__/
+.Python
+backend/morse_api/outputs/*.mp3
+backend/morse_api/key.json
+.DS_Store
+.cursor/
+__MACOSX/
+# 字母视频以 frontend/public/letter/ 为准；根目录 letter/ 为重复副本
+/letter/

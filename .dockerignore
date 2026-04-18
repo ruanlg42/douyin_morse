@@ -1,0 +1,17 @@
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.env
+.env.*
+*.md
+frontend/node_modules
+frontend/dist
+backend/morse_api/outputs/*
+.cursor
+terminals
+**/*.command
+tool
+letter
+*.mp4

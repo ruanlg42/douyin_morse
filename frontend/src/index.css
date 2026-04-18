@@ -1,0 +1,411 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Morse · Learn — Design Tokens
+   Style: Dark Mode (OLED) + Micro-interactions + light Glass
+   Type : Cormorant (display) + Inter (body) + JetBrains Mono
+   ============================================================ */
+:root {
+  --phone-w: 390px;
+  --phone-h: 844px;
+  --radius-out: 44px;
+  --radius-in: 36px;
+
+  /* Surface / background */
+  --bg: #0b0b0f;
+  --bg-deep: #08080c;
+  --surface: #141418;
+  --surface-raised: #1a1a20;
+  --surface-sunken: #0d0d11;
+
+  /* Brand — 金属金系 */
+  --gold-50:  #faf3df;
+  --gold-100: #f2d27a;
+  --gold-200: #e8c063;
+  --gold-300: #d4a747;
+  --gold-400: #c9a24a;
+  --gold-500: #a78537;
+  --gold-600: #7a5b1f;
+  --gold-700: #4e3b17;
+
+  /* Legacy aliases for existing code */
+  --accent: #d9c9a3;
+  --accent-soft: #a79574;
+
+  /* Text */
+  --text: #f2efe8;
+  --text-muted: #9a9a9f;
+  --text-faint: rgba(242, 239, 232, 0.45);
+
+  /* Border & dividers */
+  --border: #26262e;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(201, 162, 74, 0.4);
+
+  /* Semantic */
+  --success: #4ac94a;
+  --error:   #ff6b6b;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+  --dur-slow: 420ms;
+
+  /* Shadows */
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.4);
+  --shadow-gold: 0 10px 30px rgba(201, 162, 74, 0.28);
+  --shadow-gold-lg: 0 18px 48px rgba(201, 162, 74, 0.38);
+
+  /* Fonts */
+  --font-display: "Cormorant", "Cormorant Garamond", "Playfair Display", "Songti SC", ui-serif, Georgia, serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --serif: var(--font-display);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+html, body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv11", "ss01";
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 100vh;
+}
+
+/* -----------------------------------------------------------
+   Page shell — phone frame
+   ----------------------------------------------------------- */
+.app-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse 130% 80% at 50% -10%, #1d1a20 0%, var(--bg) 55%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+
+.phone-shell {
+  width: min(var(--phone-w), calc(100vw - 32px));
+  height: min(var(--phone-h), calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  background: linear-gradient(145deg, #2a2a32 0%, #121218 100%);
+  border-radius: var(--radius-out);
+  padding: 12px;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.phone-screen {
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-in);
+  background: var(--surface);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  position: relative;
+  box-sizing: border-box;
+}
+
+.phone-status-bar {
+  flex-shrink: 0;
+  height: 18px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 5px;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.phone-punch {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 32%, #3d3d48 0%, #12121a 42%, #050508 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
+    0 0 0 2px rgba(10, 10, 13, 0.95);
+}
+
+.phone-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: 0;
+  position: relative;
+  z-index: 10;
+}
+
+/* -----------------------------------------------------------
+   Scrollbar
+   ----------------------------------------------------------- */
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(217, 201, 163, 0.35);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(217, 201, 163, 0.55); }
+
+/* =============================================================
+   Button system — universal press/focus/hover behaviors
+   ============================================================= */
+
+/* Base: all buttons get clear cursor + focus ring */
+button {
+  cursor: pointer;
+  font-family: inherit;
+}
+button:disabled,
+button[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+/* Accessible focus — never remove without replacing */
+button:focus { outline: none; }
+button:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--gold-300);
+}
+
+/* Shared tactile press — applies to any .btn-tactile */
+.btn-tactile {
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out),
+    background var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out);
+  will-change: transform;
+}
+.btn-tactile:hover { transform: translateY(-1px); }
+.btn-tactile:active { transform: translateY(0) scale(0.97); }
+
+/* Icon button — circular 40px default */
+.btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: 9999px;
+  transition:
+    background var(--dur-base) var(--ease-out),
+    border-color var(--dur-base) var(--ease-out),
+    color var(--dur-base) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.btn-icon:hover {
+  background: rgba(201, 162, 74, 0.08);
+  border-color: rgba(201, 162, 74, 0.35);
+  color: var(--gold-100);
+}
+.btn-icon:active { transform: scale(0.94); }
+
+/* Ghost — transparent + gold border */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid rgba(201, 162, 74, 0.45);
+  color: var(--gold-100);
+  border-radius: 9999px;
+  transition: background var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out),
+              color var(--dur-base) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+.btn-ghost:hover {
+  background: rgba(201, 162, 74, 0.1);
+  border-color: rgba(201, 162, 74, 0.7);
+}
+.btn-ghost:active { transform: scale(0.97); }
+
+/* Primary — gold gradient */
+.btn-primary {
+  background: linear-gradient(135deg, var(--gold-600) 0%, var(--gold-400) 50%, var(--gold-100) 100%);
+  color: #1a1a1a;
+  border: none;
+  border-radius: 9999px;
+  box-shadow: var(--shadow-gold);
+  font-weight: 600;
+  transition: transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out),
+              filter var(--dur-base) var(--ease-out);
+}
+.btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-gold-lg);
+  filter: brightness(1.05);
+}
+.btn-primary:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: inset 0 4px 14px rgba(0, 0, 0, 0.2);
+  filter: brightness(0.95);
+}
+.btn-primary:disabled {
+  filter: grayscale(0.6) brightness(0.7);
+  box-shadow: none;
+  transform: none;
+}
+
+/* Glass chip — frosted pill */
+.glass-chip {
+  background: rgba(20, 20, 24, 0.72);
+  border: 1px solid var(--border-subtle);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  border-radius: 9999px;
+}
+
+/* Tap ripple — usage: <button class="btn-tactile ripple">…</button>
+   triggered via JS adding .is-rippling for the tap flash. */
+.ripple::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle at var(--rx, 50%) var(--ry, 50%),
+              rgba(255, 245, 215, 0.45) 0%,
+              rgba(255, 245, 215, 0) 45%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 520ms var(--ease-out);
+}
+.ripple.is-rippling::after {
+  opacity: 1;
+  transition: opacity 0ms;
+  animation: rippleFade 520ms var(--ease-out) forwards;
+}
+@keyframes rippleFade {
+  0%   { opacity: 1; transform: scale(0.9); }
+  100% { opacity: 0; transform: scale(1.4); }
+}
+
+/* Breathing ring — for idle call-to-action on main key */
+.breathe-ring {
+  position: absolute;
+  inset: -14px;
+  border-radius: 9999px;
+  border: 1px solid rgba(242, 210, 122, 0.22);
+  pointer-events: none;
+  animation: breathe 3.6s var(--ease-in-out) infinite;
+}
+@keyframes breathe {
+  0%, 100% { transform: scale(1);    opacity: 0.55; }
+  50%      { transform: scale(1.08); opacity: 0.2;  }
+}
+
+/* Shimmer skeleton — used for loading */
+.shimmer {
+  background: linear-gradient(100deg,
+              rgba(255, 255, 255, 0.04) 30%,
+              rgba(242, 210, 122, 0.12) 50%,
+              rgba(255, 255, 255, 0.04) 70%);
+  background-size: 220% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer {
+  0%   { background-position: 180% 0; }
+  100% { background-position: -80% 0; }
+}
+
+/* Subtle fade-in for screen transitions */
+@keyframes fadeUpIn {
+  0%   { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0);  }
+}
+.fade-up-in { animation: fadeUpIn 420ms var(--ease-out) both; }
+
+/* Tab 切换：轻量淡入（display:none → flex 时会重放此动画） */
+@keyframes tabSwitchIn {
+  0%   { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0);   }
+}
+.tab-enter { animation: tabSwitchIn 220ms var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .tab-enter { animation: none; }
+}
+
+/* Gold text gradient helper */
+.text-gold-grad {
+  background: linear-gradient(180deg, var(--gold-100) 0%, var(--gold-400) 100%);
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
+}
+
+/* Key indicator — softened dot */
+.live-dot {
+  width: 6px; height: 6px; border-radius: 9999px;
+  background: var(--gold-100);
+  box-shadow: 0 0 10px rgba(242, 210, 122, 0.9);
+  animation: livePulse 1.4s var(--ease-in-out) infinite;
+}
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* Range input thumb for sliders — currently unused but ready */
+input[type="range"] { accent-color: var(--gold-300); }
+
+/* Inputs: baseline focus */
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none;
+}
+
+/* =============================================================
+   Reduced motion
+   ============================================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .breathe-ring { display: none; }
+}

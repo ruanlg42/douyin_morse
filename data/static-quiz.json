@@ -1,0 +1,216 @@
+{
+  "version": 6,
+  "title": "小光和阿兴的星期日",
+  "items": [
+    {
+      "id": "story-01-hi",
+      "difficulty": "easy",
+      "prompt": "星期日早上，阿兴先到了小光家门口，从门缝塞进一张小纸条——只有两个英文字母，像隔着门挥手说「嗨」。最常见的那种写法，摩斯是？",
+      "options": [
+        ".... ..",
+        "--- -.-",
+        ".-.. --- ...- .",
+        "--. --- --- -.. -- --- .-. -. .. -. --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "HI",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-02-ok",
+      "difficulty": "easy",
+      "prompt": "小光也回了一张回音条：两个字母，意思是「行，没问题」。对应的摩斯怎么敲？",
+      "options": [
+        "--- -.-",
+        ".... ..",
+        "-.-- . ...",
+        "... --- ..."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "OK",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-03-yes",
+      "difficulty": "easy",
+      "prompt": "两人在楼道里等电梯，阿兴还是不放心：「你真跟我一块儿去河边呀？」小光在纸条上写了三个字母的「要、愿意」。哪一串摩斯对？",
+      "options": [
+        "-.-- . ...",
+        "-. ---",
+        ".... ..",
+        "--- -.-"
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "YES",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-04-run",
+      "difficulty": "easy",
+      "prompt": "刚冲到站台，车门嘀嘀响着要关。阿兴急得跺脚——护栏上有人用马克笔涂了那个三个字母的「快跑」。正确的是？",
+      "options": [
+        ".-. ..- -.",
+        "... ..- -.",
+        "-.-. .- -",
+        "-.. --- --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "RUN",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-05-sun",
+      "difficulty": "easy",
+      "prompt": "下车沿河岸走，天蓝得晃眼。桥头小黑板画着太阳，旁边用英文写着「太阳」三字母。它的摩斯是？",
+      "options": [
+        "... ..- -.",
+        "... --- ...",
+        ".. -.-. .",
+        ".-. ..- -."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "SUN",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-06-ice",
+      "difficulty": "easy",
+      "prompt": "小卖部阿姨指了指冰柜：价签上印着英文「冰」的三个字母。怎么敲成摩斯？",
+      "options": [
+        ".. -.-. .",
+        "... ..- -.",
+        "-.-. .- -",
+        "-.. --- --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "ICE",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-07-cat",
+      "difficulty": "easy",
+      "prompt": "石栏杆上蜷着一只小花猫，项圈吊牌刻着它的英文动物名（三个字母）。摩斯应是？",
+      "options": [
+        "-.-. .- -",
+        "-.. --- --.",
+        "-.-. --- .--",
+        "-... ..- --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "CAT",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-08-dog",
+      "difficulty": "easy",
+      "prompt": "没一会儿，小狗叼着球跑过来，主人背包上挂着同款英文牌——另一种动物的三个字母。哪组摩斯对得上？",
+      "options": [
+        "-.. --- --.",
+        "-.-. .- -",
+        "-.-. --- .--",
+        "-... . .- .-.."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "DOG",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-09-tree",
+      "difficulty": "medium",
+      "prompt": "两人把野餐垫铺在最大的那棵树下。阿兴念了念垫角洗水标上的英文——「树」，四个字母。摩斯选哪条？",
+      "options": [
+        "- .-. . .",
+        "-... --- --- -.-",
+        "-.-. .- -",
+        "-.. --- --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "TREE",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-10-book",
+      "difficulty": "medium",
+      "prompt": "吃饱犯困，阿兴从包里摸出一本口袋书，封底印着那个四个字母的「书」。正确的一组摩斯是？",
+      "options": [
+        "-... --- --- -.-",
+        "-.-. .- -",
+        ".-.. --- ...- .",
+        "-.-. --- .--"
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "BOOK",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-11-sos",
+      "difficulty": "easy",
+      "prompt": "一阵风把社区科普馆的传单吹到脚边，上面写着：遇险时要先记住这组国际通用的求救字母（三个字母）。传单指的是哪串摩斯？",
+      "options": [
+        "... --- ...",
+        "... .- --",
+        ".... ..",
+        "--- -.-"
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "SOS",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-12-no",
+      "difficulty": "easy",
+      "prompt": "阿兴又拆了一根冰棍递过来，小光笑着摆手，撕了张便签——只写两个字母的英文「不」。摩斯是？",
+      "options": [
+        "-. ---",
+        ".... ..",
+        "--- -.-",
+        "-.-- . ..."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "NO",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-13-mom",
+      "difficulty": "easy",
+      "prompt": "日头偏西，该回家了。小光给妈妈发消息，开头用最常见的英文「妈妈」三字母称呼。怎么敲摩斯？",
+      "options": [
+        "-- --- --",
+        "-.. .- -..",
+        ".-- --- .--",
+        "... .. ..."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "MOM",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-14-dad",
+      "difficulty": "easy",
+      "prompt": "手机又亮：爸爸问走到哪儿了，消息末尾是那种很常见的英文「爸爸」三字母落款。哪一串摩斯对？",
+      "options": [
+        "-.. .- -..",
+        "-- --- --",
+        "-.-. .- -",
+        "-.. --- --."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "DAD",
+      "answerType": "letters"
+    },
+    {
+      "id": "story-15-love",
+      "difficulty": "medium",
+      "prompt": "路过街角花店，小光抽了张迷你贺卡想送给妈妈——卡面印着四个英文字，意思是「爱」。其中摩斯最长的一组是？",
+      "options": [
+        ".-.. --- ...- .",
+        ".... ..",
+        "--- -.-",
+        "-.-- . ..."
+      ],
+      "correctIndex": 0,
+      "answerPlaintext": "LOVE",
+      "answerType": "letters"
+    }
+  ]
+}
