@@ -9,7 +9,6 @@ venv/
 .venv/
 backend/.venv/
 backend/morse_api/outputs/*.mp3
-backend/morse_api/key.json
 .DS_Store
 .cursor/
 __MACOSX/

@@ -1751,7 +1751,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       ctx.globalAlpha = 1;
     }
 
-    // 瞄准预览：一根指向"真实预测落点方向"的发光箭头（方向 = 横向位移 : 跳跃高度）
+    // 瞄准预览：沿真实起跳轨迹的一段运动弧线 + 相切箭尖（弧线贴合抛物路径）
     if (s.hold && !s.jump && s.character.landed && phase === 'playing') {
       const ratio = s.smoothCharge ?? 0;
       const previewSym = ratio < SYMBOL_SPLIT ? '.' : '-';
@@ -1759,37 +1759,55 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       const height = MIN_JUMP_DIST + ratio * (MAX_JUMP_DIST - MIN_JUMP_DIST);
       const reach = 0.45 + 0.55 * ratio;
       const dx = aimN * AIM_MAX_DX * reach;          // 真实横向位移（世界=屏幕，1:1）
-      // 屏幕方向向量：横向 dx、纵向 -height（向上为负）→ 与实际抛物落点方向一致
-      const dirLen = Math.hypot(dx, height) || 1;
-      const ux = dx / dirLen, uy = -height / dirLen;
       const ox = s.character.x;
       const birdSy = altToScreenY(s, s.character.alt);
-      const bx = ox + ux * 14, by = (birdSy - 6) + uy * 14;  // 箭尾略离开鸟身
-      const alen = 42 + ratio * 30;                          // 蓄力越足越长
-      const tx = bx + ux * alen, ty = by + uy * alen;        // 箭尖
       const col = previewSym === '-' ? '125,211,252' : '242,210,122';
 
+      // 取真实起跳轨迹的前段形状（k∈[0,0.7]，含拐弯段），再等比缩放到固定视觉长度
+      // → 曲率被保留，弧度看得清；纯竖直起跳(dx=0)时自然呈直线
+      const oy = birdSy - 6;
+      const KPREVIEW = 0.7;
+      const shape = [];
+      for (let k = 0; k <= KPREVIEW + 1e-6; k += 0.035) {
+        const rise = 1 - Math.pow(1 - k, 3);
+        const hp = 0.5 * k;
+        const xE = hp * hp * (3 - 2 * hp);
+        shape.push({ x: dx * xE, y: -height * rise });   // 相对起点
+      }
+      const end = shape[shape.length - 1];
+      const rawLen = Math.hypot(end.x, end.y) || 1;
+      const previewLen = 52 + ratio * 30;                // 蓄力越足弧越长
+      const sc = previewLen / rawLen;
+      const arc = shape.map((p) => ({ x: ox + p.x * sc, y: oy + p.y * sc }));
+      const a0 = arc[0];
+      const a1 = arc[arc.length - 1];
+
       ctx.save();
-      ctx.shadowColor = `rgba(${col},0.55)`;
+      ctx.shadowColor = `rgba(${col},0.5)`;
       ctx.shadowBlur = 8;
-      // 渐变淡入的箭杆
-      const grad = ctx.createLinearGradient(bx, by, tx, ty);
+      // 渐变淡入的弧形运动线
+      const grad = ctx.createLinearGradient(a0.x, a0.y, a1.x, a1.y);
       grad.addColorStop(0, `rgba(${col},0.05)`);
       grad.addColorStop(1, `rgba(${col},0.95)`);
       ctx.strokeStyle = grad;
       ctx.lineWidth = 3.2;
       ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
       ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(tx, ty);
+      ctx.moveTo(a0.x, a0.y);
+      for (let i = 1; i < arc.length; i++) ctx.lineTo(arc[i].x, arc[i].y);
       ctx.stroke();
-      // 填充三角箭尖
-      const px = -uy, py = ux;                               // 垂直于方向
-      const hb = 8, hw = 6;                                  // 箭尖长/半宽
-      const baseX = tx - ux * hb, baseY = ty - uy * hb;
+      // 弧尖箭头（方向与弧线末端相切）
+      const pen = arc[arc.length - 2] || a0;
+      let tvx = a1.x - pen.x, tvy = a1.y - pen.y;
+      const tl = Math.hypot(tvx, tvy) || 1;
+      tvx /= tl; tvy /= tl;
+      const px = -tvy, py = tvx;
+      const hb = 8, hw = 6;
+      const baseX = a1.x - tvx * hb, baseY = a1.y - tvy * hb;
       ctx.fillStyle = `rgba(${col},0.98)`;
       ctx.beginPath();
-      ctx.moveTo(tx, ty);
+      ctx.moveTo(a1.x, a1.y);
       ctx.lineTo(baseX + px * hw, baseY + py * hw);
       ctx.lineTo(baseX - px * hw, baseY - py * hw);
       ctx.closePath();
@@ -1798,7 +1816,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       ctx.shadowBlur = 0;
       ctx.fillStyle = `rgba(${col},0.7)`;
       ctx.beginPath();
-      ctx.arc(bx, by, 2.4, 0, Math.PI * 2);
+      ctx.arc(a0.x, a0.y, 2.4, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
