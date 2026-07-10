@@ -1,0 +1,17 @@
+{
+  "name": "final",
+  "version": "1.0.0",
+  "description": "摩斯码学习（视频 + 测验）+ **声印**（词 → 摩斯前奏 + AI 音乐）+ 发报沙盒。   前端：**Vite + React + Tailwind**（`frontend/`）。后端：**FastAPI**（`backend/morse_api/`）。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://www.modelscope.cn/studios/lg0402/MorseMelodyPlay.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

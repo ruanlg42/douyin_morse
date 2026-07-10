@@ -1,0 +1,19 @@
+# Render Blueprint — https://render.com 免费套餐
+# 用法：登录 Render → New → Blueprint → 连接本仓库 → 自动部署
+services:
+  - type: web
+    name: morse-melody
+    runtime: docker
+    dockerfilePath: ./Dockerfile.cloud
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: HOST
+        value: 0.0.0.0
+      - key: MORSE_SPA_DIST
+        value: /app/frontend/dist
+      # 在 Render 控制台手动添加（生成音乐需要）：
+      # - key: MINIMAX_API_KEY
+      #   sync: false

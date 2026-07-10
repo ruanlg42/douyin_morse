@@ -180,6 +180,7 @@ def generate_instrumental_prompt_for_name(
     style_hint: str = "",
     fallback_prompt: Optional[str] = None,
     with_vocals: bool = False,
+    theme_cn: Optional[str] = None,
 ) -> tuple[str, bool]:
     """
     先由文本模型根据「词语 + 风格」写出完整音乐生成提示词，供 music_generation 使用。
@@ -207,12 +208,19 @@ def generate_instrumental_prompt_for_name(
         voice_rule = "必须明确写出：全曲纯器乐，不要任何人声。"
 
     hint_block = f"\n风格锚点「{style_label}」必须包含这些元素：{style_hint}\n" if style_hint else ""
+    theme_block = ""
+    if theme_cn:
+        theme_block = (
+            f"\n本曲在应用界面上的展示标题为「{theme_cn}」。撰写编曲提示词时，必须在正文里至少出现一次「{theme_cn}」四字，"
+            f"并自然写出欢快小马、原野轻蹄、阳光草地等意象，与英文词 {abbrev} 的气质相呼应。\n"
+        )
     user = (
         f"用户为自己定制的「声音签名」输入了一个专属英文词（可能是名字、昵称或任意英文单词，已规范为大写字母）：{abbrev}\n"
         f"该词对应的摩斯电码（点划，字母间空格）：{morse_dot_dash}\n"
         f"可视化（点· 划−）：{morse_pretty}\n"
         f"用户选择的风格：{style_label}"
-        f"{hint_block}\n"
+        f"{hint_block}"
+        f"{theme_block}\n"
         "请根据这个词在中文文化语境中常见的气质、音节听感与情绪联想（不必逐字母解释摩斯），"
         "结合用户选择的风格，决定整首歌曲应有的：主奏与辅奏乐器组合、速度与律动松紧、"
         "情绪弧线（从略带神秘或私密的引子到更舒展的高潮再到余韵）、色彩和声与织体疏密。\n\n"
@@ -236,6 +244,11 @@ def generate_instrumental_prompt_for_name(
     except Exception as e:
         logger.warning("文本模型生成音乐提示词失败，使用默认模板：%s", e)
         fb = fallback_prompt or build_cover_prompt_intro_morse()
+        if theme_cn:
+            fb = (
+                f"以「{theme_cn}」为标题意象，编曲提示词须直接包含「{theme_cn}」四字，"
+                f"并体现欢快小马、原野与轻快节奏；{fb}"
+            )
         if with_vocals:
             fb = _vocalize_fallback_prompt(fb)
         return fb, False

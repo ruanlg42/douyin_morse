@@ -5,6 +5,9 @@ dist/
 *.pyc
 __pycache__/
 .Python
+venv/
+.venv/
+backend/.venv/
 backend/morse_api/outputs/*.mp3
 backend/morse_api/key.json
 .DS_Store
@@ -12,3 +15,8 @@ backend/morse_api/key.json
 __MACOSX/
 # 字母视频以 frontend/public/letter/ 为准；根目录 letter/ 为重复副本
 /letter/
+# 字形提取的中间产物（帧图/序列/离线核对图），仅本地生成，勿入库
+tool/_frames/
+tool/_seq/
+tool/_verify/
+tool/_mnemonic2.png

@@ -1,0 +1,32 @@
+# 通用云部署（Render / Railway / Fly.io 等）
+# 多阶段：Node 构建前端 + Python 运行 FastAPI 一体化服务
+
+FROM node:20-bookworm-slim AS frontend-build
+WORKDIR /repo/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+COPY data/ /repo/data/
+RUN npm run build
+
+FROM python:3.10-slim-bookworm
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+
+COPY backend/ /app/backend/
+COPY app.py /app/app.py
+COPY --from=frontend-build /repo/frontend/dist /app/frontend/dist
+
+ENV HOST=0.0.0.0
+ENV PORT=10000
+ENV MORSE_SPA_DIST=/app/frontend/dist
+
+EXPOSE 10000
+
+CMD ["python", "-u", "app.py"]

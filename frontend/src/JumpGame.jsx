@@ -1,0 +1,3542 @@
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import {
+  RotateCcw, Trophy, Play as PlayIcon, Sparkles, ShieldCheck, Star, Wind, Crown, BookOpen, X,
+  Music2, Volume2, VolumeX, Check, MoreHorizontal, GraduationCap,
+} from 'lucide-react';
+import { apiUrl } from './api.js';
+import {
+  SKILL_WORDS, findWordAtTail, findWordPrefixHints,
+  getWordMnemonic, getMissionWordHint,
+} from './jumpDict.js';
+import {
+  SUMMIT_ALT_M, ABBREV_CHALLENGES, diffOfProgress, tierOf, tierLabel,
+  applyPlatformVariant, shouldSpawnSummit, createSummitPlatform,
+  windStrength, inFogZone, stormIntensity, spawnMeteor, injectMissionBranch,
+  displayKind,
+} from './jumpMechanics.js';
+
+/* =========================================================
+   JumpGame v2 — 摩斯跳一跳 · 「星途信使」未寄之信
+   核心机制：
+   - 蓄力 < 0.4 → 短按 ·（dot），跳跃距离 60–180
+   - 蓄力 ≥ 0.4 → 长按 —（dash），跳跃距离 180–360
+   - 平台三态：DOT / DASH / BOTH（间距决定能否 di / da）
+   - PERFECT 落点 = 字母封箱：把符号缓冲合并为字母提交
+   - 词典命中 ≥3 字母英文词 → 加分 / 触发技能
+   ========================================================= */
+
+/* ---------- 摩斯映射 ---------- */
+const MORSE_MAP = {
+  A:'.-', B:'-...', C:'-.-.', D:'-..', E:'.', F:'..-.', G:'--.', H:'....',
+  I:'..', J:'.---', K:'-.-', L:'.-..', M:'--', N:'-.', O:'---', P:'.--.',
+  Q:'--.-', R:'.-.', S:'...', T:'-', U:'..-', V:'...-', W:'.--', X:'-..-',
+  Y:'-.--', Z:'--..',
+};
+const MORSE_TO_LETTER = Object.fromEntries(
+  Object.entries(MORSE_MAP).map(([l, m]) => [m, l]),
+);
+const MORSE_PREFIXES = (() => {
+  const s = new Set();
+  Object.values(MORSE_MAP).forEach((m) => {
+    for (let i = 1; i <= m.length; i++) s.add(m.slice(0, i));
+  });
+  return s;
+})();
+const isValidPrefix = (buf) => MORSE_PREFIXES.has(buf);
+const decodeLetter  = (buf) => MORSE_TO_LETTER[buf] || null;
+const prettyMorse   = (buf) => buf.replace(/\./g, '·').replace(/-/g, '—');
+
+/* ---------- 持久化 ---------- */
+const STORAGE_KEY     = 'morse-jump-best-v2';
+const LEADERBOARD_KEY = 'morse-jump-board-v1';
+const SUMMIT_KEY      = 'morse-jump-summit-v1';
+const MAX_BOARD_ROWS  = 20;
+
+const loadBoard = () => {
+  try {
+    const raw = localStorage.getItem(LEADERBOARD_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return [];
+};
+const saveBoard = (entries) => {
+  try { localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(entries)); } catch (_) {}
+};
+
+/** 与声印页「我的收藏」共用 */
+const SAVED_TRACKS_KEY = 'morse-saved-tracks';
+const BGM_PREFS_KEY    = 'morse-jump-bgm-v1';
+
+const loadSavedTracksForBgm = () => {
+  try {
+    const raw = localStorage.getItem(SAVED_TRACKS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr : [];
+  } catch (_) {
+    return [];
+  }
+};
+
+const resolveTrackPlayUrl = (track) => {
+  if (!track) return '';
+  const raw = track.stream_url || track.audio_url || '';
+  if (!raw) return '';
+  if (raw.startsWith('http')) return raw;
+  return apiUrl(raw.startsWith('/') ? raw : `/${raw}`);
+};
+
+/* ---------- 触觉 ---------- */
+const haptic = (pattern = 8) => {
+  if (typeof navigator === 'undefined') return;
+  if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (_) {} }
+};
+
+/* ---------- Web Audio ---------- */
+let _audioCtx = null;
+const _ensureCtx = () => {
+  if (_audioCtx) return _audioCtx;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    _audioCtx = Ctx ? new Ctx() : null;
+  } catch (_) { _audioCtx = null; }
+  return _audioCtx;
+};
+const _blip = (freq, dur = 0.12, type = 'triangle', vol = 0.16, slideTo = null) => {
+  const ctx = _ensureCtx();
+  if (!ctx) return;
+  try {
+    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (slideTo != null) osc.frequency.linearRampToValueAtTime(slideTo, t + dur);
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(vol, t + 0.012);
+    gain.gain.linearRampToValueAtTime(0, t + dur);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t); osc.stop(t + dur + 0.02);
+  } catch (_) {}
+};
+const sndJump    = (long) => _blip(long ? 360 : 540, long ? 0.20 : 0.12, 'triangle', 0.16, long ? 760 : 920);
+const sndLand    = ()     => _blip(620, 0.10, 'sine', 0.14);
+const sndPerfect = ()     => { _blip(1175, 0.10, 'sine', 0.14); setTimeout(() => _blip(1568, 0.16, 'sine', 0.14), 70); };
+const sndOver    = ()     => _blip(220, 0.36, 'sawtooth', 0.18, 80);
+const sndLetter  = ()     => { _blip(880, 0.08, 'sine', 0.12); setTimeout(() => _blip(1320, 0.10, 'sine', 0.12), 50); };
+const sndWord    = ()     => { [880, 1175, 1568, 2093].forEach((f, i) => setTimeout(() => _blip(f, 0.18, 'triangle', 0.13), i * 70)); };
+const sndSkill   = ()     => { [1568, 1976, 2349, 2637].forEach((f, i) => setTimeout(() => _blip(f, 0.22, 'sine', 0.15), i * 60)); };
+const sndInvalid = ()     => _blip(180, 0.12, 'sawtooth', 0.10, 140);
+const sndTick    = ()     => _blip(1046, 0.05, 'square', 0.07);
+const sndSeal    = ()     => { _blip(523, 0.09, 'sine', 0.15); setTimeout(() => _blip(784, 0.14, 'sine', 0.15), 60); };
+const sndVictory = ()     => { [523, 659, 784, 1046, 1318].forEach((f, i) => setTimeout(() => _blip(f, 0.26, 'triangle', 0.14), i * 90)); };
+const sndRetry   = ()     => _blip(330, 0.18, 'sine', 0.12, 262);
+const playMorseCode = (code) => {
+  if (!code) return;
+  let t = 0;
+  code.split('').forEach((c) => {
+    const dur = c === '-' ? 0.22 : 0.1;
+    setTimeout(() => _blip(c === '-' ? 380 : 620, dur, 'sine', 0.12), t);
+    t += (dur + 0.14) * 1000;
+  });
+};
+
+/* ---------- 物理常量（竖屏登云版） ---------- */
+const GRAVITY        = 1800;
+const MIN_HOLD_MS    = 80;
+const MAX_HOLD_MS    = 1000;   // 蓄满只要 1 秒，节奏快
+const SYMBOL_SPLIT   = 0.40;
+const HOLD_RANGE_MS  = MAX_HOLD_MS - MIN_HOLD_MS;
+
+const holdRatioFromMs = (heldMs) =>
+  Math.max(0, Math.min(1, (heldMs - MIN_HOLD_MS) / HOLD_RANGE_MS));
+
+/** 蓄力条双区填充：左半 ·、右半 — 各自 0→100%，避免单条后半段视觉猛冲 */
+const chargeBarFills = (ratio) => {
+  const dotFill = Math.min(1, ratio / SYMBOL_SPLIT);
+  const dashFill = ratio <= SYMBOL_SPLIT
+    ? 0
+    : Math.min(1, (ratio - SYMBOL_SPLIT) / (1 - SYMBOL_SPLIT));
+  return { dotFill, dashFill };
+};
+const MIN_JUMP_DIST  = 60;     // 最小升空高度
+const MAX_JUMP_DIST  = 360;    // 最大升空高度
+const PERFECT_TOL_PX = 13;
+const CHAR_ANCHOR_Y  = 0.66;   // 角色固定在屏幕 66% 高度处，上方留空看云
+const CLOUD_CORE_H   = 15;     // 云台核心视觉厚度
+
+/* ---------- 台球式瞄准（左右角度，按住后左右拖动手动控制）---------- */
+const AIM_DRAG_FULL_PX = 120;  // 手指横向拖动多少像素达到满偏（±1）
+const AIM_MAX_DX      = 150;    // 满角 + 满蓄力时的最大横向位移（世界单位）
+const AIM_SNAP_X_PAD  = 26;    // 落点吸附：允许比云半宽多出的横向容差
+
+/* ---------- 角色尺寸 ---------- */
+const OWL_W = 30;
+const OWL_H = 42;
+
+const rand   = (min, max) => min + Math.random() * (max - min);
+const choice = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+/* =========================================================
+   云台生成（世界坐标：y = 海拔，向上增大）
+   升空高度分布（MIN=60, MAX=360, SPLIT=0.4）：
+     · (dot)  → ratio 0~0.39  → 高度  60~177
+     — (dash) → ratio 0.4~1.0 → 高度 180~360
+   垂直间距编码 di / da / both：
+     dot-only : gap 100-148 （短按才够得着，跳太高会穿过去）
+     both     : gap 155-200 （长dot或短dash均可）
+     dash-only: gap 218-255 （必须长按蓄力）
+   winH = 云层厚度 = 落点容错窗口（越往上越薄）
+   颜色编码：金色云=· 短按 / 蓝色云=— 长按 / 白色云=both
+   ========================================================= */
+const CLOUD_WIN_BASE = 92;
+
+/** 云台尺寸档：宽/窄 + 厚度 → 不同难度 */
+const CLOUD_SIZES = {
+  narrow: { wRatio: 0.22, winScale: 0.68, label: '窄' },
+  normal: { wRatio: 0.32, winScale: 1.00, label: '' },
+  wide:   { wRatio: 0.44, winScale: 1.28, label: '宽' },
+};
+const CLOUD_W_MAX = 180;       // 云宽上限，避免大屏上云过宽
+
+const pickCloudSize = (diff, forceKind) => {
+  if (forceKind) return 'wide';
+  const r = Math.random();
+  if (diff > 0.28 && r < 0.18 + diff * 0.28) return 'narrow';
+  if (r < 0.20) return 'wide';
+  return 'normal';
+};
+
+/** 落台后冻结漂移云——云留在落点，不回中（保留空间记忆） */
+const freezeCloudOnLand = (p, impact = 1) => {
+  if (p.moving) p.moving = false;
+  // 触发云体下压：给一个向下速度冲量，弹簧回弹出「云被踩软」的软垫感
+  p.dipV = (p.dipV || 0) + 62 * impact;
+};
+
+const tickCloudMotion = (p, dt) => {
+  if (p.moving) {
+    p.phase += dt * p.speed;
+    p.cx = p.baseCX + Math.sin(p.phase) * p.amp;
+  }
+  // 云体下压弹簧（着陆反馈，仅本云局部起伏，不影响镜头）
+  if (p.dip || p.dipV) {
+    const k = 118;      // 刚度（偏软 → 云感）
+    const c = 11;       // 阻尼（欠阻尼 → 回弹一两下）
+    p.dipV = (p.dipV || 0) + (-k * (p.dip || 0) - c * (p.dipV || 0)) * dt;
+    p.dip = (p.dip || 0) + p.dipV * dt;
+    p.dip = Math.max(-2, Math.min(9, p.dip)); // 限幅，避免异常
+    if (Math.abs(p.dip) < 0.06 && Math.abs(p.dipV) < 0.5) { p.dip = 0; p.dipV = 0; }
+  }
+};
+
+const buildInitialPlatforms = (vw) => {
+  const p0 = { y: 0, cx: vw / 2, w: 180, winH: 110, kind: 'both', hue: 38, isStart: true, sizeKey: 'wide' };
+  const next = nextPlatform(p0, 'both', [], 0, vw);
+  return [p0, next];
+};
+
+const nextPlatform = (prev, forceKind = null, lastKinds = [], diff = 0, vw = 360, altM = 0) => {
+  let kind = forceKind;
+  if (!kind) {
+    const bothN = Math.max(3, 6 - Math.round(diff * 3));
+    const specN = 2 + Math.round(diff * 2);
+    const candidates = [
+      ...Array(bothN).fill('both'),
+      ...Array(specN).fill('dot'),
+      ...Array(specN).fill('dash'),
+    ];
+    const last2 = lastKinds.slice(-2);
+    const pool = candidates.filter(k =>
+      !(last2.length === 2 && last2[0] === k && last2[1] === k)
+    );
+    kind = choice(pool);
+  }
+  let gap;
+  if (kind === 'dot')       gap = rand(100, 148);
+  else if (kind === 'dash') gap = rand(218, 255);
+  else                      gap = rand(155, 200);
+
+  const sizeKey = pickCloudSize(diff, forceKind === 'both' && diff < 0.1);
+  const size = CLOUD_SIZES[sizeKey];
+  const winH = Math.max(46, (CLOUD_WIN_BASE - diff * 30) * size.winScale + rand(-4, 4));
+  // 台球玩法：横向拉开更明显，逼玩家用瞄准角度（保证仍在可达范围内）
+  const spread = 78 + diff * 46;
+  let cx = prev.cx + (Math.random() < 0.5 ? -1 : 1) * rand(34, spread);
+  const anchor = vw / 2;
+  const drift = cx - anchor;
+  if (Math.abs(drift) > vw * 0.42) cx = anchor + Math.sign(drift) * vw * 0.42; // 收束回可视中带
+  const p = {
+    y: prev.y + gap,
+    cx,
+    w: Math.min(CLOUD_W_MAX, Math.max(72, vw * size.wRatio)),
+    winH, kind, hue: rand(20, 55),
+    sizeKey,
+  };
+  // 漂移云：窄 + 横漂，落台后会滑回正中
+  if (!forceKind && diff > 0.14 && Math.random() < 0.14 + diff * 0.36) {
+    p.moving  = true;
+    p.baseCX  = p.cx;
+    p.amp     = Math.min(vw * 0.22, 36 + diff * 48);
+    p.speed   = 0.85 + diff * 0.95;
+    p.phase   = rand(0, Math.PI * 2);
+    p.w       = Math.min(CLOUD_W_MAX, Math.max(70, vw * CLOUD_SIZES.narrow.wRatio));
+    p.winH    = Math.max(44, winH * 0.88);
+    p.sizeKey = 'drift';
+  }
+  applyPlatformVariant(p, diff, altM, forceKind);
+  if (forceKind === 'both' && diff < 0.1) p.relay = false;
+  return p;
+};
+
+/* =========================================================
+   「寄一封信」关卡：单词 → 摩斯符号 → 一条通天云路
+   每个符号一朵云，垂直间距即点/划；字母最后一朵是「封蜡云」；
+   路顶是终点信箱。发错码 = 高度不对 = 坠落 →「电报重发」。
+   ========================================================= */
+const buildMissionLevel = (word, vw) => {
+  const platforms = [{ y: 0, cx: vw / 2, w: CLOUD_W_MAX, winH: 110, kind: 'both', hue: 38, isStart: true }];
+  const letterStarts = [];
+  let prev = platforms[0];
+  const letters = word.split('');
+  const totalSyms = letters.reduce((n, L) => n + (MORSE_MAP[L]?.length || 0), 0);
+  // 词越长云越薄，后段更紧张（窗口 66~92）
+  const thin = Math.min(26, Math.max(0, (totalSyms - 8) * 2.4));
+
+  letters.forEach((letter, li) => {
+    const code = MORSE_MAP[letter] || '';
+    letterStarts.push(platforms.length);
+    code.split('').forEach((sym, si) => {
+      const isLetterEnd = si === code.length - 1;
+      const gap = sym === '.' ? rand(105, 145) : rand(220, 250);
+      // 台球玩法：横向拉开，逼玩家瞄准；收束在可视中带内
+      let cx = prev.cx + (Math.random() < 0.5 ? -1 : 1) * rand(40, 96);
+      const anchor = vw / 2;
+      if (Math.abs(cx - anchor) > vw * 0.4) cx = anchor + Math.sign(cx - anchor) * vw * 0.4;
+      const p = {
+        y: prev.y + gap,
+        cx,
+        w: Math.min(CLOUD_W_MAX, Math.max(96, vw * (isLetterEnd ? 0.42 : 0.34))),
+        winH: isLetterEnd ? 102 : Math.max(66, CLOUD_WIN_BASE - thin),
+        kind: sym === '.' ? 'dot' : 'dash',
+        sym, letter, letterIdx: li, symIdx: si, isLetterEnd,
+        hue: rand(20, 55),
+      };
+      platforms.push(p);
+      prev = p;
+    });
+  });
+
+  platforms.push({
+    y: prev.y + rand(165, 190),
+    cx: prev.cx + rand(-28, 28),
+    w: Math.min(CLOUD_W_MAX, Math.max(140, vw * 0.46)),
+    winH: 128, kind: 'both', hue: 45, isGoal: true,
+  });
+  return { platforms: injectMissionBranch(platforms, word, vw), letterStarts, totalSyms };
+};
+
+/* =========================================================
+   主组件
+   ========================================================= */
+const JumpGame = ({ isActive = true, onOpenLearn }) => {
+  const wrapRef   = useRef(null);
+  const canvasRef = useRef(null);
+  const stateRef  = useRef(null);
+  const rafRef    = useRef(0);
+  const lastTRef  = useRef(0);
+  const dprRef    = useRef(1);
+  // HUD 反馈用稳定 DOM 节点（避免 key 重挂载导致的合成层残影）
+  const scoreNumRef  = useRef(null);
+  const scorePlusRef = useRef(null);
+  const altNumRef    = useRef(null);
+  const altPlusRef   = useRef(null);
+
+  const [score, setScore]         = useState(0);
+  const [altitude, setAltitude]   = useState(0);   // 已到达海拔（米）
+  const [combo, setCombo]         = useState(0);
+  const [best,  setBest]          = useState(0);
+  const [phase, setPhase]         = useState('idle');
+  const [charge, setCharge]       = useState(0);
+  const [showDict, setShowDict]   = useState(false);
+  const [letterBuf, setLetterBuf] = useState('');
+  const [wordBuf,   setWordBuf]   = useState('');
+  const [floater,   setFloater]   = useState(null);
+  const [skillBanner, setSkillBanner] = useState(null);
+  const [activeSkills, setActiveSkills] = useState([]);
+  const [showBoard,    setShowBoard]    = useState(false);
+  const [board,        setBoard]        = useState(() => loadBoard());
+  const [nameInput,    setNameInput]    = useState('');
+  const [nameSaved,    setNameSaved]    = useState(false);
+  const pendingScoreRef = useRef(0);
+
+  /* ---- 「寄一封信」任务模式 ---- */
+  const [gameMode, setGameMode]         = useState('endless');  // 'endless' | 'mission'
+  const [missionWord, setMissionWord]   = useState('');
+  const [missionInput, setMissionInput] = useState('');
+  const [showMissionPanel, setShowMissionPanel] = useState(false);
+  const [missionHUD, setMissionHUD]     = useState(null);       // {letters:[{letter,done,cur}], curLetter, curSym, lives}
+  const [missionResult, setMissionResult] = useState(null);     // {word, retries, time}
+  const [summitBest, setSummitBest]       = useState(null);     // {score, alt, date}
+  const [zoneLabel, setZoneLabel]         = useState('晴空');
+  const [owlPreview, setOwlPreview]       = useState([]);
+
+  const bgmRef = useRef(null);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showBgmPicker, setShowBgmPicker] = useState(false);
+  const [savedBgmList, setSavedBgmList]   = useState([]);
+  const [bgmTrack, setBgmTrack]           = useState(null);
+  const [bgmMuted, setBgmMuted]           = useState(false);
+
+  /** 顶部联想：已拼字母 → 可能完成的词 */
+  const wordHints = useMemo(() => findWordPrefixHints(wordBuf, 3), [wordBuf]);
+  const letterHint = useMemo(() => {
+    if (!letterBuf) return '';
+    const letter = decodeLetter(letterBuf);
+    if (letter) return getWordMnemonic(letter) || `字母 ${letter}`;
+    return isValidPrefix(letterBuf) ? '摩斯未完…' : '';
+  }, [letterBuf]);
+
+  useEffect(() => {
+    try {
+      const prefs = JSON.parse(localStorage.getItem(BGM_PREFS_KEY) || 'null');
+      if (!prefs?.audio_url) return;
+      const list = loadSavedTracksForBgm();
+      const t = list.find((x) => x.audio_url === prefs.audio_url);
+      if (t) setBgmTrack(t);
+    } catch (_) {}
+  }, []);
+
+  useEffect(() => {
+    const el = bgmRef.current;
+    if (!el) return;
+    const onErr = () => {
+      setBgmTrack(null);
+      try { localStorage.removeItem(BGM_PREFS_KEY); } catch (_) {}
+    };
+    el.addEventListener('error', onErr);
+    return () => el.removeEventListener('error', onErr);
+  }, []);
+
+  useEffect(() => {
+    const el = bgmRef.current;
+    if (!el) return;
+    if (!bgmTrack) {
+      el.pause();
+      el.removeAttribute('src');
+      el.removeAttribute('data-bgm-src');
+      try { el.load(); } catch (_) {}
+      return;
+    }
+    const url = resolveTrackPlayUrl(bgmTrack);
+    if (!url) return;
+    el.loop = true;
+    if (el.getAttribute('data-bgm-src') !== url) {
+      el.setAttribute('data-bgm-src', url);
+      el.src = url;
+      el.load();
+    }
+    el.volume = bgmMuted ? 0 : 0.38;
+    if (isActive) {
+      const p = el.play();
+      if (p) p.catch(() => {});
+    } else {
+      el.pause();
+    }
+  }, [bgmTrack, bgmMuted, isActive]);
+
+  const openBgmPicker = useCallback(() => {
+    setSavedBgmList(loadSavedTracksForBgm());
+    setShowToolsMenu(false);
+    setShowBgmPicker(true);
+  }, []);
+
+  const selectBgmTrack = useCallback((track) => {
+    setBgmTrack(track);
+    try {
+      localStorage.setItem(BGM_PREFS_KEY, JSON.stringify({ audio_url: track.audio_url }));
+    } catch (_) {}
+    setShowBgmPicker(false);
+    haptic(8);
+  }, []);
+
+  const clearBgmTrack = useCallback(() => {
+    setBgmTrack(null);
+    try { localStorage.removeItem(BGM_PREFS_KEY); } catch (_) {}
+    setShowBgmPicker(false);
+    haptic(4);
+  }, []);
+
+  const toggleBgmMute = useCallback(() => {
+    setBgmMuted((m) => !m);
+    haptic(4);
+  }, []);
+
+  useEffect(() => {
+    const entries = loadBoard();
+    const boardBest = entries.reduce((m, e) => Math.max(m, e.score), 0);
+    try {
+      const legacy = parseInt(localStorage.getItem(STORAGE_KEY) || '0', 10);
+      setBest(Math.max(boardBest, isNaN(legacy) ? 0 : legacy));
+      const sb = JSON.parse(localStorage.getItem(SUMMIT_KEY) || 'null');
+      if (sb?.score) setSummitBest(sb);
+    } catch (_) { setBest(boardBest); }
+  }, []);
+
+  useEffect(() => {
+    if (!floater) return;
+    const t = setTimeout(() => setFloater(null), floater.big ? 1500 : 1200);
+    return () => clearTimeout(t);
+  }, [floater]);
+
+  // 用 Web Animations API 在稳定节点上播放弹跳/飘字，避免重挂载残影
+  const bumpNumber = (el) => {
+    if (!el) return;
+    el.animate(
+      [{ transform: 'scale(1)', filter: 'brightness(1)' },
+       { transform: 'scale(1.16)', filter: 'brightness(1.35)', offset: 0.32 },
+       { transform: 'scale(1)', filter: 'brightness(1)' }],
+      { duration: 420, easing: 'cubic-bezier(0.22,1,0.36,1)' },
+    );
+  };
+  const flyPlus = (el, text, opts = {}) => {
+    if (!el) return;
+    el.textContent = text;
+    const mag = opts.mag || 1;          // 1 小 / 2 中 / 3 大
+    const peakScale = 1.15 + (mag - 1) * 0.22;
+    const rise = 22 + (mag - 1) * 14;
+    if (opts.color) el.style.color = opts.color;
+    el.style.textShadow = mag >= 3 ? '0 0 12px rgba(255,240,200,0.9)'
+      : mag >= 2 ? '0 0 8px rgba(242,210,122,0.7)' : 'none';
+    el.animate(
+      [{ opacity: 0, transform: 'translateY(6px) scale(0.7)' },
+       { opacity: 1, transform: `translateY(-2px) scale(${peakScale})`, offset: 0.22 },
+       { opacity: 0, transform: `translateY(-${rise}px) scale(1)` }],
+      { duration: 820 + (mag - 1) * 160, easing: 'cubic-bezier(0.22,1,0.36,1)' },
+    );
+  };
+
+  const popScoreGain = useCallback((n) => {
+    if (n <= 0) return;
+    bumpNumber(scoreNumRef.current);
+    const mag = n >= 40 ? 3 : n >= 14 ? 2 : 1;
+    const color = mag >= 3 ? '#fff5d8' : mag >= 2 ? '#f2d27a' : '#a7f3d0';
+    flyPlus(scorePlusRef.current, `+${n}`, { mag, color });
+    haptic(n >= 40 ? [10, 30, 10, 30] : n >= 8 ? [8, 24, 8] : 6);
+  }, []);
+
+  const popAltGain = useCallback((prevAlt, nextAlt) => {
+    const d = nextAlt - prevAlt;
+    if (d >= 8) {
+      bumpNumber(altNumRef.current);
+      flyPlus(altPlusRef.current, `+${d}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!skillBanner) return;
+    const t = setTimeout(() => setSkillBanner(null), 1500);
+    return () => clearTimeout(t);
+  }, [skillBanner]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    const canvas = canvasRef.current;
+    if (!wrap || !canvas) return;
+    const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+    dprRef.current = dpr;
+    const resize = () => {
+      const r = wrap.getBoundingClientRect();
+      canvas.width  = Math.round(r.width  * dpr);
+      canvas.height = Math.round(r.height * dpr);
+      canvas.style.width  = r.width  + 'px';
+      canvas.style.height = r.height + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (stateRef.current) stateRef.current.viewport = { w: r.width, h: r.height };
+    };
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, []);
+
+  const syncActiveSkillsHUD = useCallback(() => {
+    const s = stateRef.current;
+    if (!s) return;
+    const list = [];
+    if (s.skills.shield)         list.push({ kind: 'sos',  label: 'SOS · 护盾',     icon: 'shield' });
+    if (s.skills.winNext)        list.push({ kind: 'win',  label: 'WIN · 下跳必中', icon: 'crown'  });
+    if (s.skills.skyNext)        list.push({ kind: 'sky',  label: 'SKY · 下块超宽', icon: 'wind'   });
+    if (s.skills.goldRemain > 0) list.push({ kind: 'gold', label: `GOLD ×2 · ${s.skills.goldRemain}跳`, icon: 'star' });
+    if (s.skills.owlReveal > 0)  list.push({ kind: 'owl',  label: `OWL · 预览${s.skills.owlReveal}`, icon: 'owl' });
+    if (s.skills.moonRemain > 0) list.push({ kind: 'moon', label: `MOON · ${s.skills.moonRemain}跳`, icon: 'moon' });
+    if (s.skills.rainRemain > 0) list.push({ kind: 'rain', label: `RAIN · ${s.skills.rainRemain}朵`, icon: 'rain' });
+    if (s.skills.foxBlur > 0)    list.push({ kind: 'fox',  label: `FOX · ${s.skills.foxBlur}跳`, icon: 'fox' });
+    if (s.skills.codeFix > 0)    list.push({ kind: 'code', label: 'CODE · 纠错', icon: 'code' });
+    setActiveSkills(list);
+  }, []);
+
+  /* 任务 HUD：单词进度（哪些字母已封蜡、当前符号位置）+ 剩余机会 */
+  const syncMissionHUD = useCallback(() => {
+    const s = stateRef.current;
+    if (!s?.mission) { setMissionHUD(null); return; }
+    const { word, letterStarts, curIdx, lives } = s.mission;
+    const letters = word.split('').map((letter, li) => {
+      const startIdx = letterStarts[li];
+      const endIdx = (li + 1 < letterStarts.length ? letterStarts[li + 1] : s.platforms.length - 1) - 1;
+      return {
+        letter,
+        done: curIdx > endIdx,
+        active: curIdx >= startIdx && curIdx <= endIdx,
+        code: MORSE_MAP[letter] || '',
+        symDone: Math.max(0, Math.min(curIdx - startIdx, (MORSE_MAP[letter] || '').length)),
+      };
+    });
+    setMissionHUD({ letters, lives });
+  }, []);
+
+  const reset = useCallback((mode = 'endless', word = '') => {
+    const wrap = wrapRef.current;
+    const r = wrap?.getBoundingClientRect();
+    const vw = r?.width || 360;
+    let platforms;
+    let mission = null;
+    if (mode === 'mission' && word) {
+      const lvl = buildMissionLevel(word, vw);
+      platforms = lvl.platforms;
+      mission = {
+        word,
+        letterStarts: lvl.letterStarts,
+        totalSyms: lvl.totalSyms,
+        curIdx: 1,          // 下一个要落的云 index（0 是起点云）
+        retries: 0,
+        lives: 3,
+        startTime: performance.now(),
+      };
+    } else {
+      platforms = buildInitialPlatforms(vw);
+    }
+    stateRef.current = {
+      viewport: { w: vw, h: r?.height || 600 },
+      platforms,
+      kindHistory: ['both', 'both'],
+      cameraY: 0,
+      cameraX: vw / 2,
+      mode,
+      mission,
+      standIdx: 0,          // 当前站立的云 index
+      character: {
+        x: vw / 2,
+        alt: 0,
+        rot: 0,
+        squash: 0,
+        wingOpen: 0,
+        flapPhase: 0,
+        landingEase: 0,
+        landOffset: 0,        // 落地吸附缓冲（世界单位，>0 表示仍在落点线上方）
+        landOffsetV: 0,       // 缓冲弹簧速度
+        pose: 'idle',
+        landed: true,
+        blink: 0,
+        blinkTimer: rand(2.0, 4.0),
+      },
+      jump: null,
+      hold: null,
+      aimNorm: 0,
+      sparks: [],
+      rings: [],
+      shake: 0,
+      flash: 0,
+      score: 0,
+      combo: 0,
+      ended: false,
+      letterBuf: '',
+      wordBuf: '',
+      skills: {
+        shield: false,
+        winNext: false,
+        skyNext: false,
+        goldRemain: 0,
+        owlReveal: 0,
+        moonRemain: 0,
+        rainRemain: 0,
+        foxBlur: 0,
+        codeFix: 0,
+      },
+      env: {
+        meteors: [],
+        stormFlash: 0,
+        abbrevHint: null,
+        summitSpawned: false,
+      },
+      fragileTimer: 0,
+      smoothCharge: 0,
+      startTime: performance.now(),
+    };
+    setScore(0);
+    setAltitude(0);
+    setCombo(0);
+    setCharge(0);
+    setLetterBuf('');
+    setWordBuf('');
+    setFloater(null);
+    setSkillBanner(null);
+    setMissionResult(null);
+    setZoneLabel('晴空');
+    setOwlPreview([]);
+    syncActiveSkillsHUD();
+    syncMissionHUD();
+  }, [syncActiveSkillsHUD, syncMissionHUD]);
+
+  const startGame = useCallback((mode = 'endless', word = '') => {
+    cancelAnimationFrame(rafRef.current);
+    lastTRef.current = 0;
+    setGameMode(mode);
+    setMissionWord(word);
+    reset(mode, word);
+    setPhase('playing');
+    haptic(8);
+  }, [reset]);
+
+  const startMission = useCallback(() => {
+    const w = missionInput.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (w.length < 2 || w.length > 8) {
+      haptic([10, 30, 10]);
+      sndInvalid();
+      return;
+    }
+    startGame('mission', w);
+  }, [missionInput, startGame]);
+
+  const gameOver = useCallback(() => {
+    const s = stateRef.current;
+    if (!s || s.ended) return;
+    s.ended = true;
+    const finalScore = s.score;
+    sndOver();
+    haptic([24, 40, 24]);
+    pendingScoreRef.current = finalScore;
+    setNameInput('');
+    setNameSaved(false);
+    setPhase('over');
+    setBest((b) => {
+      const nb = Math.max(b, finalScore);
+      try { localStorage.setItem(STORAGE_KEY, String(nb)); } catch (_) {}
+      return nb;
+    });
+  }, []);
+
+  /* 无尽登顶：抵达星空之门 */
+  const summitVictory = useCallback(() => {
+    const s = stateRef.current;
+    if (!s || s.ended) return;
+    s.ended = true;
+    sndVictory();
+    haptic([12, 40, 12, 40, 20]);
+    const elapsed = Math.round((performance.now() - (s.startTime || performance.now())) / 1000);
+    const altM = Math.round(s.character.alt / 6);
+    const payload = { score: s.score, alt: altM, time: elapsed, date: new Date().toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) };
+    setMissionResult({ word: 'SUMMIT', retries: 0, time: elapsed, score: s.score, alt: altM, summit: true });
+    try {
+      const prev = JSON.parse(localStorage.getItem(SUMMIT_KEY) || 'null');
+      if (!prev || s.score > (prev.score || 0)) localStorage.setItem(SUMMIT_KEY, JSON.stringify(payload));
+      setSummitBest((b) => ((!b || s.score > b.score) ? payload : b));
+    } catch (_) {}
+    for (let i = 0; i < 100; i++) {
+      s.sparks.push(...spawnSparks(rand(0, s.viewport.w), s.character.alt + rand(-80, 120), choice([24, 38, 50]), { glow: 0.8, big: true }));
+    }
+    s.rings.push(makeRing(s.character.x, s.character.alt, { r0: 20, r1: 200, width: 3, color: '255,245,216', life: 0.9 }));
+    s.flash = 1;
+    s.shake = 9;
+    setPhase('victory');
+  }, []);
+
+  /* 任务完成：信送达 */
+  const missionVictory = useCallback(() => {
+    const s = stateRef.current;
+    if (!s?.mission || s.ended) return;
+    s.ended = true;
+    sndVictory();
+    haptic([12, 40, 12, 40, 20]);
+    const elapsed = Math.round((performance.now() - s.mission.startTime) / 1000);
+    setMissionResult({ word: s.mission.word, retries: s.mission.retries, time: elapsed, score: s.score });
+    // 满屏流星庆祝
+    for (let i = 0; i < 80; i++) {
+      s.sparks.push(...spawnSparks(
+        rand(0, s.viewport.w),
+        s.character.alt + rand(-s.viewport.h * 0.2, s.viewport.h * 0.5),
+        choice([24, 38, 50]),
+        { glow: 0.8, big: true },
+      ));
+    }
+    s.rings.push(makeRing(s.character.x, s.character.alt, { r0: 20, r1: 180, width: 3, color: '242,210,122', life: 0.9 }));
+    s.flash = 0.9;
+    s.shake = 8;
+    setPhase('victory');
+  }, []);
+
+  /* 任务模式：发错码 → 电报重发（扣一次机会，回到当前字母起点重试） */
+  const missionRetry = useCallback((now) => {
+    const s = stateRef.current;
+    if (!s?.mission) return;
+    s.mission.lives -= 1;
+    s.mission.retries += 1;
+    if (s.mission.lives <= 0) {
+      s.fall = null;
+      gameOver();
+      return;
+    }
+    // 回到当前字母第一个符号之前的云（字母起点的前一格）
+    const { letterStarts, curIdx } = s.mission;
+    let letterStart = letterStarts[0];
+    for (const st of letterStarts) { if (st <= curIdx) letterStart = st; else break; }
+    const respawnIdx = Math.max(0, letterStart - 1);
+    const p = s.platforms[respawnIdx];
+    s.mission.curIdx = letterStart;
+    s.fall = null;
+    s.jump = null;
+    s.standIdx = respawnIdx;
+    s.character.x = p.cx;
+    s.cameraX = p.cx;
+    s.character.alt = p.y;
+    s.character.rot = 0;
+    s.character.landed = true;
+    s.character.landOffset = 0;
+    s.character.landOffsetV = 0;
+    sndRetry();
+    haptic([16, 30, 16]);
+    setFloater({ text: '⚡ 电报重发', sub: `剩余 ${s.mission.lives} 次机会`, color: '#fca5a5', key: now });
+    syncMissionHUD();
+  }, [gameOver, syncMissionHUD]);
+
+  const onLandingSymbol = useCallback((sym, isPerfect, now) => {
+    const s = stateRef.current;
+    if (!s) return;
+    const cand = s.letterBuf + sym;
+    if (isValidPrefix(cand)) {
+      s.letterBuf = cand;
+    } else {
+      if (s.skills.codeFix > 0) {
+        s.skills.codeFix = 0;
+        s.letterBuf = sym;
+        syncActiveSkillsHUD();
+        setFloater({ text: 'CODE 纠错', sub: prettyMorse(sym), color: '#86efac', key: now });
+      } else {
+        s.letterBuf = sym;
+        sndInvalid();
+        setFloater({ text: '× 无效', sub: prettyMorse(cand), color: '#fca5a5', key: now });
+      }
+    }
+    let commit = isPerfect || s.letterBuf.length >= 4;
+    if (commit) {
+      const letter = decodeLetter(s.letterBuf);
+      if (letter) commitLetter(letter, now);
+      else {
+        sndInvalid();
+        setFloater({ text: '× 不是字母', sub: prettyMorse(s.letterBuf), color: '#fca5a5', key: now });
+      }
+      s.letterBuf = '';
+    }
+    setLetterBuf(s.letterBuf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const commitLetter = (letter, now) => {
+    const s = stateRef.current;
+    s.wordBuf = (s.wordBuf + letter).slice(-8);
+    setWordBuf(s.wordBuf);
+    sndLetter();
+    setFloater({ text: `+ ${letter}`, color: '#f2d27a', key: now + 1 });
+    const word = findWordAtTail(s.wordBuf);
+    if (word) {
+      s.wordBuf = s.wordBuf.slice(0, -word.length);
+      setWordBuf(s.wordBuf);
+      triggerWord(word, now);
+    }
+  };
+
+  const triggerWord = (word, now) => {
+    const s = stateRef.current;
+    const skill = SKILL_WORDS[word];
+    const baseBonus = word.length * 10;
+    if (skill) {
+      sndSkill();
+      haptic([10, 28, 10, 28, 10]);
+      s.score += baseBonus;
+      setScore(s.score);
+      popScoreGain(baseBonus);
+      activateSkill(skill.kind, now);
+      setSkillBanner({ word, desc: skill.desc, color: skill.color, key: now });
+      for (let i = 0; i < 24; i++) {
+        s.sparks.push(...spawnSparks(s.character.x + rand(-40, 40), s.character.alt + rand(0, 80), choice([24, 38, 50]), { glow: 0.8 }));
+      }
+      s.rings.push(makeRing(s.character.x, s.character.alt, { r0: 12, r1: 120, width: 3, color: '255,245,216', life: 0.7 }));
+      s.flash = 0.7;
+      s.shake = 7;
+    } else {
+      sndWord();
+      haptic([8, 22, 8]);
+      s.score += baseBonus;
+      setScore(s.score);
+      popScoreGain(baseBonus);
+      setSkillBanner({ word, desc: `+${baseBonus}`, color: '#f2d27a', key: now });
+      s.sparks.push(...spawnSparks(s.character.x, s.character.alt + 4, 38));
+      s.shake = 4;
+    }
+  };
+
+  const activateSkill = (kind, now) => {
+    const s = stateRef.current;
+    switch (kind) {
+      case 'star': {
+        s.score += 50;
+        setScore(s.score);
+        popScoreGain(50);
+        for (let i = 0; i < 60; i++) {
+          s.sparks.push(...spawnSparks(rand(0, s.viewport.w),
+                                       s.character.alt + rand(-s.viewport.h * 0.1, s.viewport.h * 0.5), choice([24, 38, 50])));
+        }
+        s.shake = 7;
+        break;
+      }
+      case 'win':  s.skills.winNext = true; break;
+      case 'gold': s.skills.goldRemain = 5;  break;
+      case 'sos':  s.skills.shield = true;   break;
+      case 'sky':  s.skills.skyNext = true;  break;
+      case 'fox':  s.skills.foxBlur = 3;    break;
+      case 'owl':  s.skills.owlReveal = 5;  break;
+      case 'moon': s.skills.moonRemain = 5;  break;
+      case 'rain': s.skills.rainRemain = 5; break;
+      case 'code': s.skills.codeFix = 1;   break;
+      default: break;
+    }
+    syncActiveSkillsHUD();
+  };
+
+  const onPressDown = useCallback((e) => {
+    if (e?.preventDefault) e.preventDefault();
+    if (phase !== 'playing') return;
+    const s = stateRef.current;
+    if (!s) return;
+    if (!s.character.landed || s.jump) return;
+    const px = e?.clientX ?? e?.touches?.[0]?.clientX ?? 0;
+    s.hold = { start: performance.now(), startX: px };
+    s.aimNorm = 0;
+    haptic(4);
+  }, [phase]);
+
+  // 弹弓式瞄准：按住后往一侧"拉"，鸟射向反方向（右下拉→左上飞）
+  const onPressMove = useCallback((e) => {
+    if (phase !== 'playing') return;
+    const s = stateRef.current;
+    if (!s || !s.hold) return;
+    if (e?.preventDefault) e.preventDefault();
+    const px = e?.clientX ?? e?.touches?.[0]?.clientX ?? s.hold.startX;
+    const norm = -(px - s.hold.startX) / AIM_DRAG_FULL_PX;  // 取反：拉向反方向发射
+    s.aimNorm = Math.max(-1, Math.min(1, norm));
+  }, [phase]);
+
+  /**
+   * 台球式落台：按鸟的真实 X/高度，落到前方对齐的那一朵云（可越层、可偏向）。
+   */
+  const findLandingCloud = (s, fromIdx, alt) => {
+    const charX = s.character.x;
+    // 台球式：扫描前方若干朵云，落到「当前真实 X/高度」对齐的那一朵（可越层、可偏向）
+    let best = -1; let bestGap = Infinity;
+    for (let i = fromIdx + 1; i < Math.min(s.platforms.length, fromIdx + 5); i++) {
+      const p = s.platforms[i];
+      if (!p || p.broken) continue;
+      if (Math.abs(alt - p.y) > p.winH / 2) continue;
+      if (Math.abs(p.cx - charX) > p.w / 2) continue;
+      const gap = Math.abs(alt - p.y);
+      if (gap < bestGap) { bestGap = gap; best = i; }
+    }
+    return best;
+  };
+
+  const onPressUp = useCallback((e) => {
+    if (e?.preventDefault) e.preventDefault();
+    if (phase !== 'playing') return;
+    const s = stateRef.current;
+    if (!s || !s.hold) return;
+    const held = Math.max(MIN_HOLD_MS, Math.min(performance.now() - s.hold.start, MAX_HOLD_MS));
+    const ratio = holdRatioFromMs(held);
+    s.hold = null;
+    s.smoothCharge = 0;
+    setCharge(0);
+    s.fragileTimer = 0;
+
+    const sym = ratio < SYMBOL_SPLIT ? '.' : '-';
+    let height = MIN_JUMP_DIST + ratio * (MAX_JUMP_DIST - MIN_JUMP_DIST);
+    let T = 0.52 + ratio * 0.26;
+    if (s.skills.moonRemain > 0) {
+      height *= 1.28;
+      T *= 1.08;
+      s.skills.moonRemain -= 1;
+      syncActiveSkillsHUD();
+    }
+
+    const useWinNext = s.skills.winNext;
+    if (useWinNext) {
+      const target = s.platforms[s.standIdx + 1];
+      if (target) { height = target.y - s.character.alt; T = 0.62; }
+      s.skills.winNext = false;
+      syncActiveSkillsHUD();
+    }
+
+    const nextP = s.platforms[s.standIdx + 1];
+
+    // 台球式落点：横向位移由「瞄准角度 × 蓄力」共同决定（跳得越高越远越能拐）
+    const aimNorm = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
+    const reach = 0.45 + 0.55 * ratio;                 // 蓄力越足横向可达越远
+    let dx = aimNorm * AIM_MAX_DX * reach;
+    let x1 = s.character.x + dx;
+
+    // 辅助吸附：若瞄准落点附近正好有一朵在合适高度、朝向一致的云，吸到其圆心
+    if (useWinNext && nextP) {
+      x1 = nextP.cx;                                   // WIN 秘技仍直达
+    } else {
+      let bestIdx = -1; let bestDist = Infinity;
+      for (let i = s.standIdx + 1; i < Math.min(s.platforms.length, s.standIdx + 4); i++) {
+        const p = s.platforms[i];
+        if (!p || p.broken) continue;
+        // 高度要够得着（在这次跳跃能覆盖的纵向范围内）
+        if (p.y <= s.character.alt + 8) continue;
+        if (p.y > s.character.alt + height + 40) continue;
+        const dist = Math.abs(p.cx - x1);
+        if (dist < p.w / 2 + AIM_SNAP_X_PAD && dist < bestDist) {
+          bestDist = dist; bestIdx = i;
+        }
+      }
+      if (bestIdx >= 0) x1 = s.platforms[bestIdx].cx;  // 软吸附到云心
+    }
+
+    s.jump = {
+      alt0: s.character.alt,
+      peakAlt: s.character.alt + height,
+      phase: 'rise',
+      t: 0, T,
+      fallV: 0,
+      height, sym,
+      fromIdx: s.standIdx,
+      x0: s.character.x,
+      x1,
+    };
+    s.character.landed = false;
+    s.character.squash = 0;
+    s.character.wingOpen = 0.12;
+    s.character.pose = 'rise';
+    s.character.landingEase = 0;
+    s.character.landOffset = 0;
+    s.character.landOffsetV = 0;
+    s.sparks.push(...spawnFlightTrail(s.character.x, s.character.alt + 6, 1.5, comboTrailTint(s.combo)));
+    // 起跳能量环：长按(划)蓝、短按(点)金
+    s.rings = s.rings || [];
+    s.rings.push(makeRing(s.character.x, s.character.alt + 4, {
+      r0: 4, r1: sym === '-' ? 40 : 26, width: 2.5,
+      color: sym === '-' ? '125,211,252' : '242,210,122', life: 0.42,
+    }));
+    sndJump(sym === '-');
+    haptic(8);
+  }, [phase, syncActiveSkillsHUD]);
+
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const down = (e) => onPressDown(e);
+    const move = (e) => onPressMove(e);
+    const up   = (e) => onPressUp(e);
+    wrap.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    return () => {
+      wrap.removeEventListener('pointerdown', down);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+  }, [onPressDown, onPressMove, onPressUp]);
+
+  useEffect(() => {
+    if (!isActive) { cancelAnimationFrame(rafRef.current); return; }
+    if (!stateRef.current) reset();
+
+    const step = (now) => {
+      const dt = Math.min(0.05, (now - (lastTRef.current || now)) / 1000);
+      lastTRef.current = now;
+      tick(dt, now);
+      draw();
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, phase]);
+
+  const tick = (dt, now) => {
+    const s = stateRef.current;
+    if (!s) return;
+
+    if (!Number.isFinite(s.character.x) || !Number.isFinite(s.character.alt) || !Number.isFinite(s.cameraY) || !Number.isFinite(s.cameraX)) {
+      reset();
+      return;
+    }
+
+    if (s.hold && phase === 'playing') {
+      const held = now - s.hold.start;
+      const target = holdRatioFromMs(held);
+      const prev = s.smoothCharge ?? 0;
+      const maxStep = (dt * 1000 / HOLD_RANGE_MS) * 1.04;
+      s.smoothCharge = Math.min(target, prev + maxStep);
+      setCharge(s.smoothCharge);
+      s.character.squash = s.smoothCharge;
+      // 台球式瞄准：角度由手指左右拖动决定（见 onPressMove），此处不再自动摆动
+    }
+
+    // 云台运动 + 环境
+    const altM = Math.round(s.character.alt / 6);
+    setZoneLabel(tierLabel(tierOf(altM)));
+    for (const p of s.platforms) tickCloudMotion(p, dt);
+
+    // 侧风（跳跃中横向偏移）
+    const wind = windStrength(altM);
+    if (s.jump && wind > 0) {
+      s.jump.windX = (s.jump.windX || 0) + Math.sin(now / 420) * wind * dt * 0.35;
+    }
+
+    // 碎云倒计时
+    if (s.fragileTimer > 0) {
+      s.fragileTimer -= dt;
+      if (s.fragileTimer <= 0) {
+        const stood = s.platforms[s.standIdx];
+        if (stood?.fragile) {
+          stood.broken = true;
+          s.character.landed = false;
+          s.fall = { v: -80, fromAlt: s.character.alt, missionMiss: false };
+          setFloater({ text: '碎云塌陷', sub: '快跳走！', color: '#fca5a5', key: now });
+        }
+        s.fragileTimer = 0;
+      }
+    }
+
+    // 流星
+    if (phase === 'playing' && !s.mission && Math.random() < 0.012 + stormIntensity(altM) * 0.02) {
+      const m = spawnMeteor(s.viewport.w, s.cameraY, s.viewport.h, altM);
+      if (m) {
+        m.x = s.cameraX + m.x - s.viewport.w / 2;
+        s.env.meteors.push(m);
+      }
+    }
+    s.env.meteors.forEach((m) => {
+      m.t += dt;
+      m.alt -= m.vy * dt;
+      m.x += m.vx * dt;
+    });
+    s.env.meteors = s.env.meteors.filter((m) => {
+      if (m.t >= m.life || m.alt < s.cameraY - 200) return false;
+      const d = Math.hypot(m.x - s.character.x, m.alt - s.character.alt);
+      if (d < 22 && phase === 'playing' && (s.jump || s.fall || !s.character.landed)) {
+        if (m.good) {
+          s.score += 15;
+          setScore(s.score);
+          popScoreGain(15);
+          setFloater({ text: '★ 流星', sub: '+15', color: '#f2d27a', key: now + Math.random() });
+        } else if (s.skills.shield) {
+          s.skills.shield = false;
+          syncActiveSkillsHUD();
+          sndSkill();
+          setFloater({ text: '⛨ 挡下陨石', color: '#a7f3d0', key: now });
+        } else {
+          s.fall = { v: -60, fromAlt: s.character.alt, missionMiss: !!s.mission };
+          s.jump = null;
+          s.character.landed = false;
+          setFloater({ text: '陨石！', sub: '坠落', color: '#fca5a5', key: now });
+        }
+        return false;
+      }
+      return true;
+    });
+
+    // 雷暴闪
+    const storm = stormIntensity(altM);
+    if (storm > 0 && Math.random() < 0.004 + storm * 0.01) {
+      s.env.stormFlash = 0.55 + storm * 0.35;
+    }
+    if (s.env.stormFlash > 0) s.env.stormFlash = Math.max(0, s.env.stormFlash - dt * 2.2);
+
+    // OWL 预览
+    if (s.skills.owlReveal > 0) {
+      const kinds = s.platforms.slice(s.standIdx + 1, s.standIdx + 6).map((p) => {
+        const fog = inFogZone(altM) && s.skills.foxBlur <= 0;
+        return displayKind(p, fog);
+      });
+      setOwlPreview(kinds);
+    } else if (owlPreview.length) setOwlPreview([]);
+
+    if (!s.jump && !s.fall) {
+      s.character.blinkTimer -= dt;
+      if (s.character.blinkTimer <= 0) {
+        s.character.blink = 1;
+        s.character.blinkTimer = rand(2.5, 4.5);
+      }
+    }
+    if (s.character.blink > 0) {
+      s.character.blink = Math.max(0, s.character.blink - dt * 6);
+    }
+
+    // 翅膀展收 + 姿态（上升收翼 / 下落张翼滑翔 / 着陆收翼）
+    let wingTarget = 0;
+    let pose = 'idle';
+    if (s.hold) {
+      pose = 'charge';
+      wingTarget = 0.06 + (s.smoothCharge ?? 0) * 0.1;
+    } else if (s.jump) {
+      if (s.jump.phase === 'rise') {
+        pose = 'rise';
+        const k = Math.min(1, s.jump.t / Math.max(0.001, s.jump.T));
+        wingTarget = 0.1 + k * 0.22;
+      } else {
+        pose = 'glide';
+        const peak = s.jump.peakAlt ?? s.character.alt;
+        const span = Math.max(48, peak - (s.jump.alt0 ?? s.character.alt));
+        const fallen = Math.max(0, peak - s.character.alt);
+        const fp = Math.min(1, fallen / span);
+        wingTarget = 0.38 + fp * 0.62;
+      }
+    } else if (s.fall) {
+      pose = 'tumble';
+      wingTarget = 1;
+    } else if (s.character.landingEase > 0) {
+      pose = 'land';
+      wingTarget = Math.max(0, 0.5 * (s.character.landingEase / 0.34));
+    }
+    s.character.pose = pose;
+
+    if (s.character.landingEase > 0) {
+      s.character.landingEase = Math.max(0, s.character.landingEase - dt);
+      if (s.character.squash > 0) s.character.squash = Math.max(0, s.character.squash - dt * 2.6);
+    }
+
+    // 落地吸附弹簧：landOffset 平滑归零 → 鸟滑入落点线，避免瞬移卡顿
+    if (s.character.landOffset || s.character.landOffsetV) {
+      const k = 210;    // 刚度
+      const damp = 22;  // 阻尼（接近临界，回弹一次即稳）
+      s.character.landOffsetV += (-k * s.character.landOffset - damp * s.character.landOffsetV) * dt;
+      s.character.landOffset += s.character.landOffsetV * dt;
+      if (Math.abs(s.character.landOffset) < 0.08 && Math.abs(s.character.landOffsetV) < 0.5) {
+        s.character.landOffset = 0;
+        s.character.landOffsetV = 0;
+      }
+    }
+
+    const wingLerp = pose === 'glide' ? 16 : pose === 'land' ? 20 : 11;
+    s.character.wingOpen += (wingTarget - s.character.wingOpen) * Math.min(1, dt * wingLerp);
+    s.character.flapPhase += dt * (
+      pose === 'glide' ? 24 : pose === 'rise' ? 14 : pose === 'tumble' ? 7 : 3
+    );
+
+    // 升空：先上升 → 再重力下落，途中可滑接任意对齐的云
+    if (s.jump) {
+      const sym = s.jump.sym;
+      const fromIdx = s.jump.fromIdx;
+
+      const handleMiss = () => {
+        s.jump = null;
+        if (s.skills.shield) {
+          const safe = s.platforms[fromIdx];
+          s.character.x = safe.cx;
+          s.character.alt = safe.y;
+          s.character.landed = true;
+          s.character.rot = 0;
+          s.character.landOffset = 0;
+          s.character.landOffsetV = 0;
+          s.standIdx = fromIdx;
+          s.skills.shield = false;
+          syncActiveSkillsHUD();
+          sndSkill();
+          haptic([20, 40, 20]);
+          setFloater({ text: '⛨ SOS 复活', color: '#a7f3d0', key: now });
+          s.letterBuf = '';
+          setLetterBuf('');
+          return;
+        }
+        s.character.landed = false;
+        s.fall = {
+          v: -120,
+          fromAlt: s.character.alt,
+          missionMiss: !!s.mission,
+        };
+      };
+
+      const handleLand = (hitIdx) => {
+        const target = s.platforms[hitIdx];
+        const isPerfect = Math.abs(s.character.alt - target.y) <= PERFECT_TOL_PX;
+        // 落地吸附：把「当前高度→落点线」的残差交给弹簧缓冲，视觉上滑入而非瞬移
+        const residual = s.character.alt - target.y;
+        const impactV = s.jump?.fallV || 120;
+        const impact = Math.max(0.5, Math.min(1.6, impactV / 150));
+        freezeCloudOnLand(target, impact);
+        s.jump = null;
+        s.character.landed = true;
+        // 不再硬吸到台子正中：保留自然落点 X，仅夹紧到台面安全区内（可偏离中心）
+        {
+          const half = (target.w || 60) * 0.34;
+          s.character.x = Math.max(target.cx - half, Math.min(target.cx + half, s.character.x));
+        }
+        s.standIdx = hitIdx;
+        s.character.alt = target.y;
+        // 视觉偏移：从残差起步 + 一点向下冲量 → 欠阻尼回弹出「落地一沉」
+        s.character.landOffset = residual;
+        s.character.landOffsetV = -6 * impact;
+        s.character.landingEase = 0.34;
+        s.character.squash = isPerfect ? 0.24 : 0.15;
+        s.character.wingOpen = Math.max(s.character.wingOpen, 0.88);
+        s.character.pose = 'land';
+        s.character.rot = 0;
+        const prevAlt = Math.round((s.platforms[fromIdx]?.y ?? s.character.alt) / 6);
+        const nextAlt = Math.round(target.y / 6);
+        setAltitude(nextAlt);
+        popAltGain(prevAlt, nextAlt);
+
+        const skipped = hitIdx - fromIdx - 1;
+
+        /* ===== 任务模式 ===== */
+        if (s.mission) {
+          if (target.isBranch && !target.branchCorrect) {
+            s.combo = 0;
+            setCombo(0);
+            missionRetry(now);
+            return;
+          }
+          if (hitIdx !== s.mission.curIdx) {
+            s.combo = 0;
+            setCombo(0);
+            missionRetry(now);
+            return;
+          }
+          let gained;
+          if (isPerfect) {
+            s.combo += 1;
+            gained = 6 + Math.min(s.combo - 1, 5) * 2;
+            sndPerfect();
+            haptic([8, 36, 12]);
+            setFloater({
+              text: s.combo >= 2 ? `PERFECT ×${s.combo}` : 'PERFECT',
+              sub: `+${gained}`,
+              color: '#fff5d8', key: now, big: true,
+            });
+            const heat = s.combo >= 8 ? '255,255,255' : s.combo >= 5 ? '255,245,216' : '242,210,122';
+            s.sparks.push(...spawnSparks(s.character.x, target.y, target.hue, { glow: 0.7 }));
+            s.sparks.push(...spawnSparks(s.character.x, target.y - 6, target.hue + 30, { glow: 0.5 }));
+            s.sparks.push(...spawnDust(s.character.x, target.y, 1));
+            s.rings.push(makeRing(s.character.x, target.y, { r1: 46 + Math.min(s.combo, 8) * 6, width: 3, color: heat, life: 0.5 }));
+          } else {
+            s.combo = 0;
+            gained = 3;
+            sndLand();
+            haptic(8);
+            setFloater({ text: '+3', color: '#f2d27a', key: now, big: true });
+            s.sparks.push(...spawnFlightTrail(s.character.x, target.y + 4, 0.65));
+            s.sparks.push(...spawnDust(s.character.x, target.y, 0.7));
+            s.rings.push(makeRing(s.character.x, target.y, { r1: 32, width: 2, color: '226,222,236', life: 0.4 }));
+          }
+          s.score += gained;
+          setScore(s.score);
+          popScoreGain(gained);
+          setCombo(s.combo);
+          if (target.isGoal) { missionVictory(); return; }
+          if (target.sym) {
+            sndTick();
+            if (target.isLetterEnd) {
+              sndSeal();
+              setFloater({
+                text: `✉ ${target.letter}`,
+                sub: prettyMorse(MORSE_MAP[target.letter] || ''),
+                color: '#f2d27a', key: now + 1,
+              });
+              s.sparks.push(...spawnSparks(s.character.x, target.y, 45));
+            }
+          }
+          s.mission.curIdx = target.isBranch && target.branchCorrect ? hitIdx + 2 : hitIdx + 1;
+          syncMissionHUD();
+          return;
+        }
+
+        /* ===== 无尽模式 ===== */
+        if (target.dual && sym !== target.requiredSym) {
+          s.combo = 0;
+          setCombo(0);
+          sndInvalid();
+          setFloater({ text: '双频错位', sub: `需要 ${target.requiredSym === '.' ? '·' : '—'}`, color: '#fca5a5', key: now });
+          s.character.landed = false;
+          s.fall = { v: -100, fromAlt: s.character.alt, missionMiss: false };
+          s.jump = null;
+          return;
+        }
+        if (target.waxSeal && !isPerfect) {
+          s.combo = 0;
+          setCombo(0);
+          sndInvalid();
+          setFloater({ text: '封蜡未闭合', sub: '需 PERFECT', color: '#fca5a5', key: now });
+          s.character.landed = false;
+          s.fall = { v: -90, fromAlt: s.character.alt, missionMiss: false };
+          s.jump = null;
+          return;
+        }
+        if (target.decoy) {
+          s.letterBuf = '';
+          setLetterBuf('');
+          setFloater({ text: '干扰电码', sub: '缓冲已清空', color: '#fdba74', key: now });
+        }
+        if (target.listen && target.listenCode) {
+          playMorseCode(target.listenCode);
+          setFloater({ text: '听码云', sub: prettyMorse(target.listenCode), color: '#c4b5fd', key: now + 2 });
+        }
+        if (target.relay) {
+          const ab = choice(ABBREV_CHALLENGES);
+          setFloater({ text: '中继站', sub: `${ab.word} · ${ab.hint}`, color: '#bae6fd', key: now + 3 });
+        }
+        if (target.fragile) s.fragileTimer = 1.15;
+        if (target.isSummit) { summitVictory(); return; }
+
+        if (skipped > 0) {
+          sndLand();
+          const skipBonus = skipped * 4;
+          s.score += skipBonus;
+          setScore(s.score);
+          popScoreGain(skipBonus);
+          setFloater({
+            text: '滑接',
+            sub: skipped >= 2 ? `越过 ${skipped} 层 +${skipBonus}` : `高处落下 +${skipBonus}`,
+            color: '#bae6fd', key: now, big: true,
+          });
+        }
+
+        let baseGained = 3;
+        if (isPerfect) {
+          s.combo += 1;
+          const bonus = Math.min(s.combo - 1, 6);
+          baseGained = 6 + bonus * 2;
+          sndPerfect();
+          haptic([8, 36, 12]);
+          if (skipped <= 0) {
+            setFloater({
+              text: s.combo >= 2 ? `PERFECT ×${s.combo}` : 'PERFECT',
+              sub: `+${baseGained}`,
+              color: '#fff5d8', key: now, big: true,
+            });
+          }
+          const heat = s.combo >= 8 ? '255,255,255' : s.combo >= 5 ? '255,245,216' : '242,210,122';
+          s.sparks.push(...spawnSparks(s.character.x, target.y, target.hue, { glow: 0.7, power: 1 + Math.min(s.combo, 8) * 0.05 }));
+          s.sparks.push(...spawnSparks(s.character.x, target.y - 6, target.hue + 30, { glow: 0.5 }));
+          s.sparks.push(...spawnDust(s.character.x, target.y, 1));
+          s.rings.push(makeRing(s.character.x, target.y, { r1: 46 + Math.min(s.combo, 8) * 6, width: 3, color: heat, life: 0.5 }));
+          // 连击里程碑：x5 / x10 满屏爆发 + 金光爆闪（保留一次轻微竖向脉冲，其余靠光效）
+          if (s.combo === 5 || s.combo === 10 || (s.combo > 10 && s.combo % 5 === 0)) {
+            s.flash = Math.min(1, 0.6 + s.combo * 0.02);
+            s.shake = Math.max(s.shake, 6);
+            s.rings.push(makeRing(s.character.x, target.y, { r0: 20, r1: 130, width: 2.5, color: '255,245,216', life: 0.7 }));
+            for (let i = 0; i < 5; i++) {
+              s.sparks.push(...spawnSparks(s.character.x + rand(-30, 30), target.y + rand(-20, 40), choice([24, 38, 50]), { glow: 0.8, big: true }));
+            }
+            sndSkill();
+            haptic([10, 30, 10, 30, 16]);
+            setFloater({ text: `连击 ×${s.combo}`, sub: '热流爆发', color: '#fff5d8', key: now + 1, big: true });
+          }
+        } else {
+          s.combo = 0;
+          if (skipped <= 0) {
+            sndLand();
+            haptic(8);
+            setFloater({ text: '+3', sub: '落台', color: '#f2d27a', key: now, big: true });
+          }
+          s.sparks.push(...spawnFlightTrail(s.character.x, target.y + 4, 0.65));
+          s.sparks.push(...spawnDust(s.character.x, target.y, 0.7));
+          s.rings.push(makeRing(s.character.x, target.y, { r1: 32, width: 2, color: '226,222,236', life: 0.4 }));
+        }
+
+        let gained = baseGained;
+        if (s.skills.goldRemain > 0) {
+          gained = baseGained * 2;
+          s.skills.goldRemain -= 1;
+          syncActiveSkillsHUD();
+        }
+        s.score += gained;
+        setScore(s.score);
+        popScoreGain(gained);
+        setCombo(s.combo);
+        onLandingSymbol(sym, isPerfect, now);
+
+        while (s.platforms.length - hitIdx < 4) {
+          const last = s.platforms[s.platforms.length - 1];
+          const altM = Math.round(s.character.alt / 6);
+          const diff = diffOfProgress(s.score, altM);
+          let forced = null;
+          if (s.skills.skyNext) {
+            forced = 'both';
+            s.skills.skyNext = false;
+            syncActiveSkillsHUD();
+          }
+          if (shouldSpawnSummit(altM, s.platforms)) {
+            const summit = createSummitPlatform(last, s.viewport.w);
+            s.platforms.push(summit);
+            s.env.summitSpawned = true;
+            break;
+          }
+          const np = nextPlatform(last, forced, s.kindHistory, diff, s.viewport.w, altM);
+          if (s.skills.rainRemain > 0) {
+            np.w = Math.min(CLOUD_W_MAX, s.viewport.w * 0.58);
+            np.winH = Math.max(np.winH, 120);
+            np.sizeKey = 'wide';
+            s.skills.rainRemain -= 1;
+            syncActiveSkillsHUD();
+          }
+          if (forced === 'both') { np.w = Math.min(CLOUD_W_MAX, s.viewport.w * 0.62); np.winH = 150; np.sizeKey = 'wide'; }
+          s.platforms.push(np);
+          s.kindHistory.push(np.kind);
+          if (s.kindHistory.length > 6) s.kindHistory.shift();
+        }
+        if (hitIdx >= 2) {
+          const cut = hitIdx - 1;
+          s.platforms.splice(0, cut);
+          s.standIdx -= cut;
+        }
+      };
+
+      if (s.jump.phase === 'rise') {
+        s.jump.t += dt;
+        const { t, T, alt0, peakAlt, x0, x1 } = s.jump;
+        const k = Math.min(1, t / T);
+        const rise = 1 - Math.pow(1 - k, 3);
+        s.character.alt = alt0 + (peakAlt - alt0) * rise;
+        const windX = s.jump.windX || 0;
+        // 水平进度：整段飞行连续 0→0.5（升空段），落点段接着 0.5→1.0，避免顶点处 X 回跳抖动
+        const hp = 0.5 * k;
+        const xEase = hp * hp * (3 - 2 * hp);
+        const arc = Math.sin(k * Math.PI) * 4;
+        s.character.x = (x0 ?? s.character.x) + ((x1 ?? x0 ?? s.character.x) - (x0 ?? s.character.x)) * xEase + arc + windX;
+        s.character.rot += (0.04 * Math.sin(k * Math.PI) - s.character.rot) * Math.min(1, dt * 10);
+        s.character.squash = -0.1 * Math.sin(k * Math.PI);
+        if (Math.random() < 0.28) {
+          s.sparks.push(...spawnFlightTrail(s.character.x, s.character.alt - 12, 0.32, comboTrailTint(s.combo)));
+        }
+        if (k >= 1) {
+          s.jump.phase = 'fall';
+          s.jump.fallV = 0;
+          s.character.alt = peakAlt;
+          s.character.squash = 0;
+        }
+      } else {
+        // 下落：重力加速 + 张翼滑翔接台
+        s.jump.fallV += GRAVITY * dt * (s.skills.moonRemain > 0 ? 0.42 : 0.52);
+        s.character.alt -= s.jump.fallV * dt;
+        const windX = s.jump.windX || 0;
+        const peak = s.jump.peakAlt ?? s.character.alt;
+        const span = Math.max(48, peak - s.jump.alt0);
+        const fallen = Math.max(0, peak - s.character.alt);
+        const fp = Math.min(1, fallen / span);
+        const { x0, x1 } = s.jump;
+        // 落点段水平进度接续升空段：0.5→1.0，整段连续，无顶点回跳
+        const hp = 0.5 + 0.5 * fp;
+        const xEase = hp * hp * (3 - 2 * hp);
+        s.character.x = (x0 ?? s.character.x) + ((x1 ?? x0 ?? s.character.x) - (x0 ?? s.character.x)) * xEase + windX * 0.4;
+        const targetRot = fp < 0.2 ? 0.14 : fp > 0.55 ? -0.06 : 0.04;
+        s.character.rot += (targetRot - s.character.rot) * Math.min(1, dt * 9);
+        if (fp > 0.35 && Math.random() < 0.45) {
+          s.sparks.push(...spawnFlightTrail(s.character.x, s.character.alt - 8, 0.28 + fp * 0.2, comboTrailTint(s.combo)));
+        }
+
+        const hitIdx = findLandingCloud(s, fromIdx, s.character.alt);
+        const canLand = s.jump.fallV > 32 || fallen > Math.min(36, span * 0.12);
+        if (hitIdx >= 0 && canLand) {
+          handleLand(hitIdx);
+        } else if (s.character.alt < s.platforms[fromIdx].y - 42) {
+          handleMiss();
+        }
+      }
+    }
+
+    // 坠落
+    if (s.fall) {
+      s.fall.v += GRAVITY * dt * 0.55;
+      s.character.alt -= s.fall.v * dt;
+      s.character.pose = 'tumble';
+      s.character.wingOpen = Math.min(1, s.character.wingOpen + dt * 3);
+      s.character.rot += dt * 3.5;
+      if (Math.random() < 0.5) {
+        s.sparks.push(...spawnFlightTrail(s.character.x, s.character.alt - 6, 0.4));
+      }
+      if (s.character.alt < s.fall.fromAlt - s.viewport.h * 0.62) {
+        if (s.fall.missionMiss && s.mission) {
+          missionRetry(now);
+        } else {
+          s.fall = null;
+          gameOver();
+        }
+      }
+    }
+
+    // 摄像机：跟随鸟的「视觉高度」(alt + landOffset)，而非骤降的 alt。
+    // 落地帧 alt 瞬吸到落点线、landOffset 补上残差 → 视觉高度连续，镜头不跳；
+    // 随后 landOffset 弹簧归零，鸟先稳稳落到台上，镜头再平稳跟过去。
+    if (!s.fall) {
+      const visualAlt = s.character.alt + (s.character.landOffset || 0);
+      let camRate = 6;
+      if (s.jump?.phase === 'rise') camRate = 3.4;
+      else if (s.jump?.phase === 'fall') camRate = 8;
+      else if (s.character.landingEase > 0) camRate = 5.5;  // 落地后镜头稍慢，让鸟先落定
+      s.cameraY += (visualAlt - s.cameraY) * Math.min(1, dt * camRate);
+
+      let camXRate = 5.2;
+      if (s.jump?.phase === 'rise') camXRate = 3.6;
+      else if (s.jump?.phase === 'fall') camXRate = 6.5;
+      else if (s.character.landingEase > 0) camXRate = 5.5;
+      s.cameraX += (s.character.x - s.cameraX) * Math.min(1, dt * camXRate);
+    }
+
+    if (s.shake > 0) s.shake = Math.max(0, s.shake - dt * 34);
+    if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 2.4);
+
+    // 粒子（世界坐标：alt 向上为正）
+    s.sparks.forEach((p) => {
+      p.t += dt;
+      p.x += p.vx * dt;
+      p.alt += p.va * dt;
+      p.va -= 360 * dt;
+      p.alpha = Math.max(0, 1 - p.t / p.life);
+    });
+    s.sparks = s.sparks.filter((p) => p.alpha > 0.02);
+
+    // 冲击波光环
+    if (s.rings && s.rings.length) {
+      s.rings.forEach((rg) => { rg.t += dt; });
+      s.rings = s.rings.filter((rg) => rg.t < rg.life);
+    }
+  };
+
+  /** 世界海拔 → 屏幕 Y（角色锚定在屏幕 66% 高度处） */
+  const altToScreenY = (s, alt) => s.viewport.h * CHAR_ANCHOR_Y + (s.cameraY - alt);
+
+  const draw = () => {
+    const canvas = canvasRef.current;
+    const s = stateRef.current;
+    if (!canvas || !s) return;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dprRef.current, 0, 0, dprRef.current, 0, 0);
+    const { w, h } = s.viewport;
+
+    // 夜空：越高越深邃
+    const bg = ctx.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, '#0b0a12');
+    bg.addColorStop(0.5, '#12101a');
+    bg.addColorStop(1, '#1d1a20');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    // 视差星层（两层，伪随机固定星位，随海拔/横向缓慢漂移）
+    const xParallax = (s.cameraX - w * 0.5) * 0.14;
+    const drawStars = (count, parallax, size, alphaBase) => {
+      const offsetY = (s.cameraY * parallax) % h;
+      ctx.fillStyle = '#fff5d8';
+      for (let i = 0; i < count; i++) {
+        let sx = ((i * 727) % 997) / 997 * w - xParallax * (parallax / 0.2);
+        sx = ((sx % w) + w) % w;
+        let sy = (((i * 331) % 991) / 991 * h + offsetY) % h;
+        if (sy < 0) sy += h;
+        const tw = 0.5 + 0.5 * Math.sin(Date.now() / 900 + i * 1.7);
+        ctx.globalAlpha = alphaBase * (0.45 + 0.55 * tw);
+        ctx.beginPath();
+        ctx.arc(sx, sy, size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    };
+    drawStars(34, 0.12, 0.9, 0.5);
+    drawStars(18, 0.28, 1.4, 0.7);
+
+    // 顶部月光晕
+    const glow = ctx.createRadialGradient(w * 0.5, -h * 0.1, 10, w * 0.5, -h * 0.1, h * 0.7);
+    glow.addColorStop(0, 'rgba(242,210,122,0.12)');
+    glow.addColorStop(1, 'rgba(242,210,122,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, w, h);
+
+    let shakeX = 0, shakeY = 0;
+    if (s.shake > 0) {
+      // 阻尼正弦脉冲：竖向为主、横向减半，读作「一记冲击」而非满屏抖动噪声
+      const t = Date.now() / 1000;
+      const decay = Math.min(1, s.shake / 8);
+      shakeY = Math.sin(t * 46) * s.shake * 0.6 * decay;
+      shakeX = Math.sin(t * 38 + 1.3) * s.shake * 0.28 * decay;
+    }
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+
+    // 海拔刻度线（每 500 世界单位一道，营造攀升感）
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    const stepW = 500;
+    const topAlt = s.cameraY + h * CHAR_ANCHOR_Y;
+    const botAlt = s.cameraY - h * (1 - CHAR_ANCHOR_Y);
+    for (let a = Math.ceil(botAlt / stepW) * stepW; a <= topAlt; a += stepW) {
+      if (a <= 0) continue;
+      const sy = altToScreenY(s, a);
+      ctx.strokeStyle = 'rgba(201,162,74,0.10)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, sy + 0.5);
+      ctx.lineTo(w, sy + 0.5);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(201,162,74,0.35)';
+      ctx.fillText(`${Math.round(a / 10)}m`, 6, sy - 4);
+    }
+
+    // 横向世界：镜头跟随鸟，云与角色在宽天空中分布
+    ctx.translate(w / 2 - s.cameraX, 0);
+
+    // 云台（从下往上画）
+    const expectIdx = s.mission ? s.mission.curIdx : (s.standIdx + 1);
+    const altM = Math.round(s.cameraY / 6);
+    const fog = inFogZone(altM);
+    const worldMargin = 120;
+    s.platforms.forEach((p, i) => {
+      const sy = altToScreenY(s, p.y);
+      if (sy < -80 || sy > h + 80) return;
+      if (p.cx < s.cameraX - w / 2 - worldMargin || p.cx > s.cameraX + w / 2 + worldMargin) return;
+      let kindOverride = null;
+      if (s.skills.foxBlur > 0 && i > s.standIdx && !p.isSummit && !p.isGoal) {
+        kindOverride = p.kind === 'dot' ? 'dash' : p.kind === 'dash' ? 'dot' : 'both';
+      } else if (fog && !p.isSummit && !p.isGoal && !p.relay) {
+        kindOverride = 'both';
+      } else if (p.decoy && p.fakeKind) {
+        kindOverride = p.fakeKind;
+      }
+      const isTarget = i === expectIdx && !p.broken && phase === 'playing';
+      drawCloud(ctx, p, sy, isTarget, kindOverride);
+    });
+
+    // 流星
+    s.env.meteors.forEach((m) => {
+      const sy = altToScreenY(s, m.alt);
+      ctx.globalAlpha = 1 - m.t / m.life;
+      ctx.fillStyle = m.good ? '#f2d27a' : '#fca5a5';
+      ctx.beginPath();
+      ctx.arc(m.x, sy, m.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+
+    // 冲击波光环（角色下方扩散）
+    if (s.rings && s.rings.length) {
+      s.rings.forEach((rg) => {
+        const sy = altToScreenY(s, rg.alt);
+        if (sy < -60 || sy > h + 60) return;
+        const k = Math.min(1, rg.t / rg.life);
+        const eased = rg.ease === 'out' ? 1 - Math.pow(1 - k, 3) : k;
+        const r = rg.r0 + (rg.r1 - rg.r0) * eased;
+        const a = (1 - k) * 0.85;
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.strokeStyle = `rgba(${rg.color},${a})`;
+        ctx.lineWidth = rg.width * (1 - k * 0.6);
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = `rgba(${rg.color},${a})`;
+        ctx.beginPath();
+        ctx.ellipse(rg.x, sy, r, r * 0.42, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      });
+      ctx.globalAlpha = 1;
+    }
+
+    // 瞄准预览：一根指向"真实预测落点方向"的发光箭头（方向 = 横向位移 : 跳跃高度）
+    if (s.hold && !s.jump && s.character.landed && phase === 'playing') {
+      const ratio = s.smoothCharge ?? 0;
+      const previewSym = ratio < SYMBOL_SPLIT ? '.' : '-';
+      const aimN = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
+      const height = MIN_JUMP_DIST + ratio * (MAX_JUMP_DIST - MIN_JUMP_DIST);
+      const reach = 0.45 + 0.55 * ratio;
+      const dx = aimN * AIM_MAX_DX * reach;          // 真实横向位移（世界=屏幕，1:1）
+      // 屏幕方向向量：横向 dx、纵向 -height（向上为负）→ 与实际抛物落点方向一致
+      const dirLen = Math.hypot(dx, height) || 1;
+      const ux = dx / dirLen, uy = -height / dirLen;
+      const ox = s.character.x;
+      const birdSy = altToScreenY(s, s.character.alt);
+      const bx = ox + ux * 14, by = (birdSy - 6) + uy * 14;  // 箭尾略离开鸟身
+      const alen = 42 + ratio * 30;                          // 蓄力越足越长
+      const tx = bx + ux * alen, ty = by + uy * alen;        // 箭尖
+      const col = previewSym === '-' ? '125,211,252' : '242,210,122';
+
+      ctx.save();
+      ctx.shadowColor = `rgba(${col},0.55)`;
+      ctx.shadowBlur = 8;
+      // 渐变淡入的箭杆
+      const grad = ctx.createLinearGradient(bx, by, tx, ty);
+      grad.addColorStop(0, `rgba(${col},0.05)`);
+      grad.addColorStop(1, `rgba(${col},0.95)`);
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      // 填充三角箭尖
+      const px = -uy, py = ux;                               // 垂直于方向
+      const hb = 8, hw = 6;                                  // 箭尖长/半宽
+      const baseX = tx - ux * hb, baseY = ty - uy * hb;
+      ctx.fillStyle = `rgba(${col},0.98)`;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(baseX + px * hw, baseY + py * hw);
+      ctx.lineTo(baseX - px * hw, baseY - py * hw);
+      ctx.closePath();
+      ctx.fill();
+      // 尾部小圆点（起点锚）
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = `rgba(${col},0.7)`;
+      ctx.beginPath();
+      ctx.arc(bx, by, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 角色
+    drawOwl(ctx, s.character, altToScreenY(s, s.character.alt + (s.character.landOffset || 0)), !!s.skills.shield);
+
+    // 粒子（带辉光的用 shadowBlur 渲染，营造星火感）
+    s.sparks.forEach((sp) => {
+      const sy = altToScreenY(s, sp.alt);
+      if (sy < -20 || sy > h + 20) return;
+      ctx.globalAlpha = sp.alpha;
+      ctx.fillStyle = sp.color;
+      if (sp.glow) {
+        ctx.shadowBlur = 8 * sp.glow;
+        ctx.shadowColor = sp.color;
+      }
+      ctx.beginPath();
+      ctx.arc(sp.x, sy, sp.r, 0, Math.PI * 2);
+      ctx.fill();
+      if (sp.glow) ctx.shadowBlur = 0;
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+
+    // 大事件金色高光爆闪（PERFECT 里程碑 / 技能 / 登顶）
+    if (s.flash > 0) {
+      const fg = ctx.createRadialGradient(w * 0.5, h * CHAR_ANCHOR_Y, 10, w * 0.5, h * CHAR_ANCHOR_Y, Math.max(w, h) * 0.75);
+      fg.addColorStop(0, `rgba(255,240,200,${s.flash * 0.5})`);
+      fg.addColorStop(0.5, `rgba(242,210,122,${s.flash * 0.22})`);
+      fg.addColorStop(1, 'rgba(242,210,122,0)');
+      ctx.fillStyle = fg;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // 雷暴闪白
+    if (s.env.stormFlash > 0) {
+      ctx.fillStyle = `rgba(220,230,255,${s.env.stormFlash * 0.35})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // 迷雾蒙层
+    if (fog && phase === 'playing') {
+      const fogGrad = ctx.createLinearGradient(0, 0, 0, h);
+      fogGrad.addColorStop(0, 'rgba(140,150,170,0)');
+      fogGrad.addColorStop(0.5, 'rgba(100,110,130,0.12)');
+      fogGrad.addColorStop(1, 'rgba(80,90,110,0.08)');
+      ctx.fillStyle = fogGrad;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // FEVER 氛围：连击分 3 档 —— 暖金(≥3) / 白热(≥5) / 极光(≥10)
+    if (s.combo >= 3 && phase === 'playing') {
+      const tier = s.combo >= 10 ? 2 : s.combo >= 5 ? 1 : 0;
+      const feverRGB = tier === 2 ? '191,232,255' : tier === 1 ? '255,240,200' : '242,210,122';
+      const pulseSpeed = tier === 2 ? 120 : tier === 1 ? 150 : 180;
+      const pulse = 0.5 + 0.5 * Math.sin(Date.now() / pulseSpeed);
+      const baseA = tier === 2 ? 0.30 : tier === 1 ? 0.26 : 0.22;
+      const alpha = Math.min(baseA, 0.08 + s.combo * 0.02) * (0.6 + 0.4 * pulse);
+      const edge = Math.min(w, h) * (0.22 + tier * 0.05);
+      const grads = [
+        ctx.createLinearGradient(0, 0, edge, 0),
+        ctx.createLinearGradient(w, 0, w - edge, 0),
+        ctx.createLinearGradient(0, 0, 0, edge),
+        ctx.createLinearGradient(0, h, 0, h - edge),
+      ];
+      grads.forEach((g, i) => {
+        g.addColorStop(0, `rgba(${feverRGB},${alpha})`);
+        g.addColorStop(1, `rgba(${feverRGB},0)`);
+        ctx.fillStyle = g;
+        if (i === 0)      ctx.fillRect(0, 0, edge, h);
+        else if (i === 1) ctx.fillRect(w - edge, 0, edge, h);
+        else if (i === 2) ctx.fillRect(0, 0, w, edge);
+        else              ctx.fillRect(0, h - edge, w, edge);
+      });
+      // 高档位额外顶部铭牌
+      if (tier >= 1) {
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 10px JetBrains Mono, monospace';
+        ctx.globalAlpha = 0.5 + 0.4 * pulse;
+        ctx.fillStyle = `rgba(${feverRGB},0.95)`;
+        ctx.fillText(tier === 2 ? '✦ AURORA FEVER ✦' : '✦ FEVER ✦', w / 2, 14 + edge * 0.3);
+        ctx.restore();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // 下一朵云在屏幕上方看不见时，顶部画向上箭头
+    if (phase === 'playing' && !s.jump && !s.fall && s.character.landed) {
+      const nextP = s.platforms[s.standIdx + 1];
+      if (nextP) {
+        const sy = altToScreenY(s, nextP.y);
+        if (sy < 12) {
+          const ax = Math.max(14, Math.min(w - 14, nextP.cx - s.cameraX + w / 2));
+          ctx.save();
+          ctx.globalAlpha = 0.78 + 0.22 * Math.sin(Date.now() / 260);
+          ctx.fillStyle = '#FFD166';
+          ctx.strokeStyle = '#000';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(ax,      10);
+          ctx.lineTo(ax - 8,  22);
+          ctx.lineTo(ax - 3,  22);
+          ctx.lineTo(ax - 3,  32);
+          ctx.lineTo(ax + 3,  32);
+          ctx.lineTo(ax + 3,  22);
+          ctx.lineTo(ax + 8,  22);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+  };
+
+  const restart = () => { startGame(gameMode, missionWord); };
+
+  const handleSaveName = useCallback(() => {
+    const name = nameInput.trim() || '无名信使';
+    const entry = {
+      name,
+      score: pendingScoreRef.current,
+      date: new Date().toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }),
+    };
+    setBoard((prev) => {
+      const next = [entry, ...prev]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_BOARD_ROWS);
+      saveBoard(next);
+      return next;
+    });
+    setNameSaved(true);
+    haptic(12);
+  }, [nameInput]);
+
+  return (
+    <div id="panel-play" role="tabpanel" className="relative flex flex-col h-full px-3 sm:px-5 fade-up-in min-h-0">
+      <audio ref={bgmRef} preload="metadata" playsInline className="sr-only" aria-hidden="true" />
+      {/* 顶部标题栏：左侧文案为主，右侧仅战绩 + 更多 */}
+      <div className="mt-2 mb-3 flex items-start justify-between gap-2 flex-shrink-0">
+        <div className="min-w-0 flex-1 pr-1">
+          <h2 className="text-[21px] font-semibold leading-snug tracking-wide" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+            星途信使
+          </h2>
+          <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            一封未寄出的信 · 乘云而上送往星空
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0 pt-0.5">
+          <button type="button" aria-label="战绩榜单"
+                  onClick={() => { setShowToolsMenu(false); setShowBoard(true); }}
+                  className="btn-tactile flex items-center gap-1 px-2 py-0.5 rounded-full"
+                  style={{ background: 'rgba(201,162,74,0.10)', border: '1px solid rgba(201,162,74,0.25)' }}>
+            <Trophy className="w-3.5 h-3.5" style={{ color: 'var(--gold-300)' }} />
+            <span className="text-[11px] font-mono tabular-nums" style={{ color: 'var(--gold-100)' }}>{best}</span>
+          </button>
+          <div className="relative">
+            <button type="button" aria-label="更多" aria-expanded={showToolsMenu}
+                    aria-haspopup="menu"
+                    onClick={() => setShowToolsMenu((s) => !s)}
+                    className="btn-icon btn-tactile w-9 h-9 flex-shrink-0 relative">
+              <MoreHorizontal className="w-[18px] h-[18px]" />
+              {bgmTrack ? (
+                <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                      style={{
+                        background: bgmMuted ? 'rgba(255,255,255,0.35)' : 'var(--gold-300)',
+                        boxShadow: !bgmMuted ? '0 0 6px var(--gold-300)' : 'none',
+                      }} />
+              ) : null}
+            </button>
+            {showToolsMenu ? (
+              <>
+                <div className="fixed inset-0 z-[58]" aria-hidden="true" onClick={() => setShowToolsMenu(false)} />
+                <div role="menu" className="absolute right-0 top-full z-[59] mt-1.5 w-[min(228px,calc(100vw-2.5rem))] rounded-2xl py-1.5 shadow-xl pop-in"
+                     style={{ background: 'var(--surface)', border: '1px solid var(--border-subtle)', transformOrigin: 'top right' }}>
+                  <button type="button" role="menuitem" onClick={() => { openBgmPicker(); }}
+                          className="menu-item w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px]"
+                          style={{ color: 'var(--text)' }}>
+                    <Music2 className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+                    <span>背景音乐</span>
+                    {bgmTrack ? (
+                      <span className="ml-auto text-[10px] truncate max-w-[72px]" style={{ color: 'var(--text-faint)' }}>
+                        {(bgmTrack.word || '').slice(0, 8)}
+                      </span>
+                    ) : null}
+                  </button>
+                  {bgmTrack ? (
+                    <button type="button" role="menuitem" onClick={() => { toggleBgmMute(); }}
+                            className="menu-item w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px]"
+                            style={{ color: 'var(--text)' }}>
+                      {bgmMuted ? <VolumeX className="w-4 h-4 flex-shrink-0" /> : <Volume2 className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />}
+                      <span>{bgmMuted ? '恢复背景音乐' : '静音'}</span>
+                    </button>
+                  ) : null}
+                  <button type="button" role="menuitem" onClick={() => { setShowToolsMenu(false); onOpenLearn?.(); }}
+                          className="menu-item w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px]"
+                          style={{ color: 'var(--text)' }}>
+                    <GraduationCap className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+                    <span>字母教学</span>
+                    <span className="ml-auto text-[10px]" style={{ color: 'var(--text-faint)' }}>学 · 练</span>
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => { setShowToolsMenu(false); setShowDict(true); }}
+                          className="menu-item w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px]"
+                          style={{ color: 'var(--text)' }}>
+                    <BookOpen className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+                    <span>摩斯字典</span>
+                  </button>
+                  <div className="my-1 mx-3 h-px" style={{ background: 'var(--border-subtle)' }} />
+                  <button type="button" role="menuitem" onClick={() => { setShowToolsMenu(false); restart(); }}
+                          className="menu-item w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-[13px]"
+                          style={{ color: 'var(--text-muted)' }}>
+                    <RotateCcw className="w-4 h-4 flex-shrink-0" />
+                    <span>重新开始</span>
+                  </button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* 游戏面板 */}
+      <div
+        ref={wrapRef}
+        className="flex-1 min-h-0 rounded-[28px] overflow-hidden relative select-none touch-none"
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--border-subtle)',
+          boxShadow: '0 8px 40px rgba(0,0,0,0.4)',
+          cursor: phase === 'playing' ? 'pointer' : 'default',
+        }}
+      >
+        <canvas ref={canvasRef} className="block w-full h-full" />
+
+        {/* 蓄力边缘光：短按档金光 / 长按档蓝光（松手前的即时反馈） */}
+        {phase === 'playing' && charge > 0 ? (
+          <div className="absolute inset-0 pointer-events-none rounded-[28px] transition-shadow duration-75"
+               style={{
+                 boxShadow: charge < SYMBOL_SPLIT
+                   ? `inset 0 0 ${26 + charge * 90}px rgba(242,210,122,${0.10 + charge * 0.5})`
+                   : `inset 0 0 ${40 + charge * 80}px rgba(125,211,252,${0.16 + charge * 0.38})`,
+               }} />
+        ) : null}
+
+        {/* HUD — 顶栏状态条 + 底栏拼词坞，中间留给游戏画面 */}
+        {phase === 'playing' ? (
+        <div className="absolute inset-x-0 top-0 z-10 pointer-events-none">
+          <div
+            className="px-3 pt-2 pb-2.5"
+            style={{ background: 'linear-gradient(180deg, rgba(8,7,9,0.88) 0%, rgba(8,7,9,0.42) 72%, transparent 100%)' }}
+          >
+            <div className="flex items-end gap-2">
+              <div className="shrink-0 w-[54px]">
+                <span className="text-[9px] tracking-[0.2em] uppercase block leading-none mb-0.5" style={{ color: 'var(--text-faint)' }}>分</span>
+                <div className="relative leading-none">
+                  <span
+                    ref={scoreNumRef}
+                    className="text-[1.4rem] font-bold tabular-nums text-gold-grad"
+                    style={{ fontFamily: 'var(--font-display)', willChange: 'transform' }}
+                  >
+                    {score}
+                  </span>
+                  <span ref={scorePlusRef} className="absolute -right-3.5 -top-0.5 text-xs font-bold font-mono"
+                        style={{ color: '#a7f3d0', opacity: 0 }} />
+                </div>
+              </div>
+
+              <div className="flex-1 min-w-0 pb-0.5">
+                {gameMode === 'endless' ? (
+                  <>
+                    <div className="h-1 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.1)' }}>
+                      <div
+                        className="h-full transition-all duration-300"
+                        style={{
+                          width: `${Math.min(100, (altitude / SUMMIT_ALT_M) * 100)}%`,
+                          background: 'linear-gradient(90deg, #7A5B1F, #F2D27A)',
+                          boxShadow: '0 0 8px rgba(242,210,122,0.45)',
+                        }}
+                      />
+                    </div>
+                    <p className="text-[9px] text-center truncate mt-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>
+                      {zoneLabel}
+                      <span className="mx-1 opacity-40">·</span>
+                      天门 {altitude}/{SUMMIT_ALT_M}m
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[10px] text-center tracking-[0.14em] pb-1" style={{ color: 'var(--text-muted)' }}>
+                    寄信任务
+                  </p>
+                )}
+              </div>
+
+              <div className="shrink-0 w-[54px] text-right">
+                <span className="text-[9px] tracking-[0.2em] uppercase block leading-none mb-0.5" style={{ color: 'var(--text-faint)' }}>高度</span>
+                <div className="relative leading-none">
+                  <span
+                    ref={altNumRef}
+                    className="text-lg font-semibold tabular-nums font-mono"
+                    style={{ color: 'var(--gold-100)', willChange: 'transform' }}
+                  >
+                    {altitude}
+                    <span className="text-[10px] font-normal ml-px" style={{ color: 'var(--text-muted)' }}>m</span>
+                  </span>
+                  <span ref={altPlusRef} className="absolute -left-4 top-0 text-xs font-mono font-bold" style={{ color: '#bae6fd', opacity: 0 }} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {(combo >= 2 || owlPreview.length > 0 || activeSkills.length > 0) ? (
+            <div className="absolute top-[3.4rem] right-2 flex flex-col items-end gap-1 max-w-[46%]">
+              {combo >= 2 ? (() => {
+                const tier = combo >= 10 ? 2 : combo >= 5 ? 1 : combo >= 3 ? 0 : -1;
+                const styleByTier = tier === 2
+                  ? { bg: 'rgba(191,232,255,0.24)', bd: 'rgba(191,232,255,0.6)', fg: '#e0f2ff', label: 'AURORA' }
+                  : tier === 1
+                  ? { bg: 'rgba(255,240,200,0.24)', bd: 'rgba(255,240,200,0.6)', fg: '#fff5d8', label: 'FEVER' }
+                  : tier === 0
+                  ? { bg: 'rgba(242,210,122,0.22)', bd: 'rgba(242,210,122,0.5)', fg: 'var(--gold-100)', label: '连击' }
+                  : { bg: 'rgba(242,210,122,0.16)', bd: 'rgba(242,210,122,0.4)', fg: 'var(--gold-100)', label: '' };
+                return (
+                  <div className={`px-2.5 py-1 rounded-full flex items-center gap-1 combo-glow ${tier >= 1 ? 'combo-fever' : ''}`}
+                       style={{ background: styleByTier.bg, border: `1px solid ${styleByTier.bd}`, color: styleByTier.fg }}>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {styleByTier.label ? (
+                      <span className="text-[8px] tracking-[0.15em] font-semibold opacity-90">{styleByTier.label}</span>
+                    ) : null}
+                    <span className="text-xs font-bold font-mono">×{combo}</span>
+                  </div>
+                );
+              })() : null}
+              {owlPreview.length > 0 ? (
+                <div className="flex items-center gap-1 px-2 py-0.5 rounded-full"
+                     style={{ background: 'rgba(196,181,253,0.12)', border: '1px solid rgba(196,181,253,0.28)' }}>
+                  <span className="text-[8px]" style={{ color: '#c4b5fd' }}>OWL</span>
+                  {owlPreview.map((k, i) => (
+                    <span key={i} className="text-[10px] font-mono" style={{ color: 'var(--gold-100)' }}>
+                      {k === 'dot' ? '·' : k === 'dash' ? '—' : '·—'}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {activeSkills.map((sk) => (
+                <div key={sk.kind} className="px-2 py-0.5 rounded-full flex items-center gap-1"
+                     style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', backdropFilter:'blur(6px)' }}>
+                  {sk.icon === 'shield' ? <ShieldCheck className="w-3 h-3" style={{color:'#a7f3d0'}}/> : null}
+                  {sk.icon === 'crown'  ? <Crown        className="w-3 h-3" style={{color:'#a7f3d0'}}/> : null}
+                  {sk.icon === 'wind'   ? <Wind         className="w-3 h-3" style={{color:'#bae6fd'}}/> : null}
+                  {sk.icon === 'star'   ? <Star         className="w-3 h-3" style={{color:'#f2d27a'}}/> : null}
+                  <span className="text-[9px] font-mono">{sk.label}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        ) : null}
+
+        {/* 任务模式：底栏字母进度 */}
+        {phase === 'playing' && gameMode === 'mission' && missionHUD ? (
+          <div
+            className={`absolute left-3 right-3 z-10 pointer-events-none transition-[bottom] duration-150 ${charge > 0 ? 'bottom-[3.4rem]' : 'bottom-3'}`}
+          >
+            <div
+              className="rounded-2xl px-3 py-2.5"
+              style={{ background:'rgba(8,7,9,0.78)', border:'1px solid rgba(201,162,74,0.2)', backdropFilter:'blur(10px)' }}
+            >
+              <p className="text-[10px] font-mono tracking-wide text-center truncate mb-2"
+                 style={{ color:'var(--text-muted)' }}>
+                {getMissionWordHint(missionWord)}
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto no-scrollbar">
+                  {missionHUD.letters.map((L, i) => (
+                    <div key={i} className="flex flex-col items-center px-1.5 py-0.5 rounded-lg shrink-0"
+                         style={{
+                           background: L.active ? 'rgba(242,210,122,0.14)' : 'transparent',
+                           border: L.active ? '1px solid rgba(242,210,122,0.4)' : '1px solid transparent',
+                           opacity: L.done ? 1 : L.active ? 1 : 0.5,
+                         }}>
+                      <span className="text-[13px] font-bold font-mono leading-none"
+                            style={{ color: L.done ? 'var(--gold-300)' : L.active ? 'var(--gold-100)' : 'var(--text-faint)' }}>
+                        {L.done ? '✓' : L.letter}
+                      </span>
+                      <span className="text-[8px] font-mono tracking-[0.1em] mt-0.5 leading-none">
+                        {L.code.split('').map((c, si) => (
+                          <span key={si} style={{
+                            color: L.done || si < L.symDone ? 'var(--gold-300)'
+                                 : (L.active && si === L.symDone) ? '#a7f3d0' : 'rgba(255,255,255,0.22)',
+                          }}>
+                            {c === '.' ? '·' : '—'}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-0.5 shrink-0 pl-2 border-l" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <span key={i} className="text-[11px] leading-none"
+                          style={{ opacity: i < missionHUD.lives ? 1 : 0.18 }}>
+                      ✉
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* 无尽模式：底栏摩斯拼词坞 */}
+        {phase === 'playing' && gameMode !== 'mission' ? (
+          (() => {
+            const _lb = letterBuf;
+            const _wb = wordBuf;
+            const _hints = wordHints;
+            const decoded = _lb ? decodeLetter(_lb) : null;
+            const startIdx = Math.max(0, _wb.length - 8);
+            const tiles = _wb.slice(startIdx).split('');
+            return (
+          <div
+            className={`absolute left-3 right-3 z-10 pointer-events-none transition-[bottom] duration-150 ${charge > 0 ? 'bottom-[3.4rem]' : 'bottom-3'}`}
+          >
+            <div
+              className="rounded-2xl px-3 py-2.5"
+              style={{ background:'rgba(8,7,9,0.78)', border:'1px solid rgba(201,162,74,0.2)', backdropFilter:'blur(10px)' }}
+            >
+              <div className="flex items-center gap-2.5 min-h-[28px]">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex items-center gap-1 min-w-[36px] justify-center">
+                    {_lb ? (
+                      _lb.split('').map((c, i) =>
+                        c === '.' ? (
+                          <span key={i} className="rounded-full flex-shrink-0"
+                                style={{ width: 6, height: 6, background: 'var(--gold-100)', boxShadow: '0 0 6px rgba(242,210,122,0.8)' }} />
+                        ) : (
+                          <span key={i} className="rounded-full flex-shrink-0"
+                                style={{ width: 14, height: 6, background: 'linear-gradient(90deg,var(--gold-600),var(--gold-100))' }} />
+                        )
+                      )
+                    ) : (
+                      <span className="text-[10px] tracking-[0.12em]" style={{ color: 'var(--text-faint)' }}>· —</span>
+                    )}
+                  </div>
+                  <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.25)' }}>→</span>
+                  <span className="flex items-center justify-center rounded-md font-bold shrink-0"
+                        style={{
+                          width: 22, height: 22, fontSize: 12, fontFamily: 'var(--font-display)',
+                          color: decoded ? '#1a1a1a' : 'var(--text-faint)',
+                          background: decoded ? 'linear-gradient(135deg,var(--gold-300),var(--gold-100))' : 'rgba(255,255,255,0.05)',
+                          border: decoded ? 'none' : '1px dashed rgba(255,255,255,0.16)',
+                        }}>
+                    {_lb ? (decoded || '?') : '·'}
+                  </span>
+                </div>
+
+                <div className="w-px self-stretch shrink-0" style={{ background: 'rgba(255,255,255,0.08)' }} />
+
+                <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                  {tiles.length > 0 ? (
+                    tiles.map((ch, i) => {
+                      const isLatest = startIdx + i === _wb.length - 1;
+                      return (
+                        <span key={i}
+                              className="flex items-center justify-center rounded-md text-[11px] font-bold font-mono shrink-0"
+                              style={{
+                                width: 20, height: 22,
+                                background: isLatest ? 'linear-gradient(135deg,var(--gold-300),var(--gold-100))' : 'rgba(242,210,122,0.1)',
+                                color: isLatest ? '#1a1a1a' : 'var(--gold-100)',
+                                border: isLatest ? 'none' : '1px solid rgba(201,162,74,0.2)',
+                              }}>
+                          {ch}
+                        </span>
+                      );
+                    })
+                  ) : (
+                    <span className="text-[10px] tracking-[0.1em] truncate" style={{ color: 'var(--text-faint)' }}>
+                      短按点 · 长按划 · 反向拉动瞄准
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {tiles.length > 0 && _hints.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1 mt-2 pt-2 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+                  {_hints.slice(0, 3).map((h) => (
+                    <span key={h.word}
+                          className="text-[9px] font-mono px-2 py-0.5 rounded-full"
+                          style={{
+                            background: 'rgba(255,255,255,0.04)',
+                            border: `1px solid ${h.isSkill ? 'rgba(167,243,208,0.28)' : 'rgba(201,162,74,0.18)'}`,
+                          }}>
+                      <span style={{ color: h.isSkill ? '#a7f3d0' : 'var(--gold-100)' }}>{_wb}</span>
+                      <span style={{ color: 'rgba(255,255,255,0.28)' }}>{h.tail}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+            );
+          })()
+        ) : null}
+
+        {/* 飘字 */}
+        {floater ? (
+          <div key={floater.key}
+               className={`absolute left-1/2 -translate-x-1/2 pointer-events-none floater text-center ${floater.big ? 'floater-big' : ''}`}
+               style={{ top: floater.big ? '32%' : '38%' }}>
+            <div className={`font-bold tracking-wider drop-shadow-[0_0_24px_rgba(242,210,122,0.75)] ${floater.big ? 'text-4xl' : 'text-2xl font-semibold'}`}
+                 style={{ color: floater.color || 'var(--gold-100)', fontFamily: 'var(--font-display)' }}>
+              {floater.text}
+            </div>
+            {floater.sub ? (
+              <div className={`mt-1 font-mono tracking-widest font-semibold ${floater.big ? 'text-base' : 'text-[11px] mt-0.5'}`}
+                   style={{ color: floater.color || 'var(--text-muted)' }}>
+                {floater.sub}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* 技能横幅 */}
+        {skillBanner ? (
+          <div key={skillBanner.key} className="absolute left-1/2 top-[28%] -translate-x-1/2 pointer-events-none banner text-center">
+            <div className="text-[10px] tracking-[0.4em] mb-1" style={{ color:'var(--text-muted)' }}>
+              {SKILL_WORDS[skillBanner.word] ? '★ SKILL' : 'WORD'}
+            </div>
+            <div className="text-4xl font-bold tracking-[0.15em] drop-shadow-[0_0_24px_rgba(242,210,122,0.7)]"
+                 style={{ color: skillBanner.color, fontFamily: 'var(--font-display)' }}>
+              {skillBanner.word}
+            </div>
+            <div className="text-[12px] mt-1" style={{ color: skillBanner.color }}>{skillBanner.desc}</div>
+          </div>
+        ) : null}
+
+        {/* 蓄力条 */}
+        {phase === 'playing' && charge > 0 ? (() => {
+          /* 任务模式：当前需要的符号（蓄错档位时给红色警示） */
+          let expectedSym = null;
+          if (gameMode === 'mission' && missionHUD) {
+            const L = missionHUD.letters.find((l) => l.active);
+            expectedSym = L ? (L.code[L.symDone] || null) : 'any';
+          }
+          const curSym = charge < SYMBOL_SPLIT ? '.' : '-';
+          const wrongZone = expectedSym && expectedSym !== 'any' && expectedSym !== curSym;
+          const { dotFill, dashFill } = chargeBarFills(charge);
+          return (
+            <div className="absolute bottom-3 left-6 right-6 pointer-events-none">
+              <div
+                className="relative h-2 rounded-full overflow-hidden flex"
+                style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)' }}
+              >
+                <div className="relative h-full" style={{ width: '50%' }}>
+                  <div
+                    className="h-full rounded-l-full"
+                    style={{
+                      width: `${dotFill * 100}%`,
+                      background: wrongZone && curSym === '.'
+                        ? 'linear-gradient(90deg, #b45f5f 0%, #fca5a5 100%)'
+                        : 'linear-gradient(90deg, #c9a24a 0%, #f2d27a 100%)',
+                      boxShadow: dotFill > 0.02
+                        ? (wrongZone && curSym === '.'
+                          ? '0 0 10px rgba(252,165,165,0.65)'
+                          : '0 0 10px rgba(242,210,122,0.65)')
+                        : undefined,
+                    }}
+                  />
+                </div>
+                <div className="w-px flex-shrink-0 self-stretch" style={{ background:'rgba(255,255,255,0.45)' }} />
+                <div className="relative h-full" style={{ width: '50%' }}>
+                  <div
+                    className="h-full rounded-r-full"
+                    style={{
+                      width: `${dashFill * 100}%`,
+                      background: wrongZone && curSym === '-'
+                        ? 'linear-gradient(90deg, #b45f5f 0%, #fca5a5 100%)'
+                        : 'linear-gradient(90deg, #7dd3fc 0%, #38bdf8 100%)',
+                      boxShadow: dashFill > 0.02
+                        ? (wrongZone && curSym === '-'
+                          ? '0 0 10px rgba(252,165,165,0.65)'
+                          : '0 0 10px rgba(125,211,252,0.7)')
+                        : undefined,
+                    }}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-between mt-1 text-[10px] font-mono" style={{ color:'var(--text-faint)' }}>
+                <span style={{ color: expectedSym === '.' ? '#a7f3d0' : dotFill > 0.15 ? 'var(--gold-100)' : undefined }}>
+                  · di{expectedSym === '.' ? ' ◄' : ''}
+                </span>
+                {expectedSym && expectedSym !== 'any' ? (
+                  <span style={{ color: wrongZone ? '#fca5a5' : '#a7f3d0' }}>
+                    {wrongZone ? '档位不对！' : '就是这个劲儿'}
+                  </span>
+                ) : null}
+                <span style={{ color: expectedSym === '-' ? '#a7f3d0' : dashFill > 0.08 ? '#7dd3fc' : undefined }}>
+                  {expectedSym === '-' ? '► ' : ''}— da
+                </span>
+              </div>
+            </div>
+          );
+        })() : null}
+
+        {/* idle / over 蒙层 */}
+        {phase !== 'playing' ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center px-4 py-5 min-h-0"
+               style={{ background:'rgba(8,7,9,0.78)', backdropFilter:'blur(6px)' }}>
+            {phase === 'idle' ? (
+              <>
+                {/* ── 抖音式极简首屏：3 秒看懂，1 键开玩 ── */}
+                <div className="w-full max-w-[min(290px,calc(100vw-2rem))] flex flex-col items-center gap-4 max-h-[min(92vh,640px)] overflow-y-auto overscroll-contain">
+                  <div className="flex flex-col items-center gap-1 w-full">
+                    <Sparkles className="w-8 h-8 mb-0.5" style={{ color:'var(--gold-300)' }} aria-hidden="true" />
+                    <h3 className="text-[26px] font-semibold tracking-wide text-center leading-none"
+                        style={{ color:'var(--text)', fontFamily:'var(--font-display)' }}>
+                      星途信使
+                    </h3>
+                    <p className="text-[11px] tracking-[0.1em] text-center" style={{ color:'var(--text-muted)' }}>
+                      把心事敲成摩斯，一朵云一朵云送上星空
+                    </p>
+                  </div>
+
+                  {/* 唯一规则：一行看懂 */}
+                  <div className="w-full flex items-center justify-center gap-4 py-2.5 rounded-2xl"
+                       style={{ background:'rgba(255,255,255,0.04)', border:'1px solid rgba(201,162,74,0.16)' }}>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-[20px] leading-none font-mono font-bold" style={{ color:'#f2d27a' }}>·</span>
+                      <span className="text-[11px]" style={{ color:'var(--text-muted)' }}>短按 小跳</span>
+                    </div>
+                    <div className="w-px h-7" style={{ background:'rgba(201,162,74,0.2)' }} />
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-[20px] leading-none font-mono font-bold" style={{ color:'#7dd3fc' }}>—</span>
+                      <span className="text-[11px]" style={{ color:'var(--text-muted)' }}>长按 冲天</span>
+                    </div>
+                    <div className="w-px h-7" style={{ background:'rgba(201,162,74,0.2)' }} />
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-[13px] leading-none" style={{ color:'var(--gold-300)' }}>★</span>
+                      <span className="text-[11px]" style={{ color:'var(--text-muted)' }}>踩云心暴击</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-center leading-relaxed px-1" style={{ color:'var(--text-faint)' }}>
+                    无尽模式登顶 <b style={{ color:'var(--gold-100)' }}>{SUMMIT_ALT_M}m</b> 天门即通关 · 越高越难
+                  </p>
+                  <p className="text-[10px] text-center leading-relaxed px-1" style={{ color:'var(--text-faint)' }}>
+                    碎云 / 双频 / 迷雾 / 雷暴 / 星流 · 拼 FOX OWL MOON RAIN CODE
+                  </p>
+
+                  {/* 主按钮：立即开玩 */}
+                  <button type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={() => startGame('endless')}
+                          className="btn-tactile w-full py-3.5 rounded-full text-[15px] font-bold flex items-center justify-center gap-2 tracking-[0.15em] idle-cta"
+                          style={{ background:'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)',
+                                   color:'#1a1a1a', boxShadow:'0 6px 28px rgba(217,201,163,0.45)' }}>
+                    <PlayIcon className="w-5 h-5" /> 开始送信
+                  </button>
+
+                  {/* 次入口：寄一封信（默认折叠） */}
+                  {!showMissionPanel ? (
+                    <button type="button"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={() => setShowMissionPanel(true)}
+                            className="btn-tactile px-5 py-2 rounded-full text-[12px] font-medium tracking-wide"
+                            style={{ background:'rgba(201,162,74,0.10)', border:'1px solid rgba(201,162,74,0.28)',
+                                     color:'var(--gold-100)' }}>
+                      ✉ 寄一封信 · 自定义单词关卡
+                    </button>
+                  ) : (
+                    <div className="w-full rounded-2xl px-3.5 py-3 flex flex-col gap-2 fade-up-in"
+                         onPointerDown={(e) => e.stopPropagation()}
+                         style={{ background:'rgba(201,162,74,0.07)', border:'1px solid rgba(201,162,74,0.22)' }}>
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] tracking-[0.14em]" style={{ color:'var(--gold-100)' }}>
+                          ✉ 寄一封信
+                        </p>
+                        <button type="button" onClick={() => setShowMissionPanel(false)}
+                                className="text-[11px] px-1.5" style={{ color:'var(--text-faint)' }}>
+                          收起
+                        </button>
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          maxLength={8}
+                          value={missionInput}
+                          onChange={(e) => setMissionInput(e.target.value.toUpperCase().replace(/[^A-Za-z]/g, ''))}
+                          onKeyDown={(e) => { if (e.key === 'Enter') startMission(); }}
+                          placeholder="LOVE / HOME / DREAM…"
+                          className="flex-1 min-w-0 rounded-xl px-3 py-2 text-[13px] font-mono tracking-[0.15em] outline-none uppercase"
+                          style={{ background:'rgba(8,7,9,0.5)', border:'1px solid rgba(201,162,74,0.28)',
+                                   color:'var(--text)', caretColor:'var(--gold-300)' }}
+                        />
+                        <button type="button" onClick={startMission}
+                                disabled={missionInput.trim().length < 2}
+                                className="btn-tactile px-4 py-2 rounded-xl text-[12px] font-semibold flex-shrink-0 disabled:opacity-40"
+                                style={{ background:'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)',
+                                         color:'#1a1a1a' }}>
+                          寄出
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {['LOVE','HOME','STAR','MOON','DREAM'].map((w) => (
+                          <button key={w} type="button"
+                                  onClick={() => setMissionInput(w)}
+                                  className="px-2 py-0.5 rounded-full text-[10px] font-mono tracking-widest btn-tactile"
+                                  style={{ background: missionInput === w ? 'rgba(242,210,122,0.22)' : 'rgba(255,255,255,0.05)',
+                                           border: missionInput === w ? '1px solid rgba(242,210,122,0.5)' : '1px solid rgba(255,255,255,0.10)',
+                                           color: missionInput === w ? 'var(--gold-100)' : 'var(--text-muted)' }}>
+                            {w}
+                          </button>
+                        ))}
+                      </div>
+                      {missionInput.trim().length >= 2 ? (
+                        <p className="text-[10px] font-mono tracking-[0.2em] text-left break-words" style={{ color:'var(--text-faint)' }}>
+                          {missionInput.trim().toUpperCase().split('').map((ch) =>
+                            `${ch}=${prettyMorse(MORSE_MAP[ch] || '')}`).join('  ')}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+
+                  <p className="text-[10px] tracking-wide text-center" style={{ color:'var(--text-faint)' }}>
+                    连跳拼出 STAR / FOX / OWL / SOS 等单词，触发隐藏秘技
+                  </p>
+                  {summitBest ? (
+                    <p className="text-[10px] text-center" style={{ color:'#a7f3d0' }}>
+                      已通关 · 最佳 {summitBest.score} 分 · {summitBest.alt}m
+                    </p>
+                  ) : null}
+                </div>
+              </>
+            ) : phase === 'victory' && missionResult ? (
+              <>
+                {missionResult.summit ? (
+                  <>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-3xl mb-1" aria-hidden="true">🌌</span>
+                      <p className="text-[10px] tracking-[0.3em] uppercase mb-1" style={{ color:'var(--gold-400)' }}>
+                        — Summit Reached —
+                      </p>
+                      <h3 className="text-2xl font-semibold" style={{ color:'var(--text)', fontFamily:'var(--font-display)' }}>
+                        登顶天门
+                      </h3>
+                    </div>
+                    <div className="w-full max-w-[260px] rounded-2xl px-4 py-3.5 text-center flex flex-col gap-2"
+                         style={{ background:'rgba(201,162,74,0.08)', border:'1px solid rgba(201,162,74,0.28)' }}>
+                      <p className="text-[13px]" style={{ color:'var(--text-muted)' }}>信使抵达星空之门</p>
+                      <div className="flex justify-center gap-4 text-[11px]" style={{ color:'var(--text-muted)' }}>
+                        <span>海拔 <b style={{ color:'var(--gold-100)' }}>{missionResult.alt}m</b></span>
+                        <span>用时 <b style={{ color:'var(--gold-100)' }}>{missionResult.time}s</b></span>
+                        <span>得分 <b style={{ color:'var(--gold-100)' }}>{missionResult.score}</b></span>
+                      </div>
+                      {summitBest ? (
+                        <p className="text-[10px]" style={{ color:'#a7f3d0' }}>最佳纪录 {summitBest.score} 分</p>
+                      ) : null}
+                    </div>
+                    <div className="flex gap-2.5" onPointerDown={(e) => e.stopPropagation()}>
+                      <button type="button" onClick={() => startGame('endless')}
+                              className="btn-tactile px-5 py-2.5 rounded-full text-[12px] font-semibold"
+                              style={{ background:'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)', color:'#1a1a1a' }}>
+                        再攀一次
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                {/* ── 任务完成：信已送达 ── */}
+                <div className="flex flex-col items-center gap-0.5">
+                  <span className="text-3xl mb-1" aria-hidden="true">✉</span>
+                  <p className="text-[10px] tracking-[0.3em] uppercase mb-1" style={{ color:'var(--gold-400)' }}>
+                    — Letter Delivered —
+                  </p>
+                  <h3 className="text-2xl font-semibold" style={{ color:'var(--text)', fontFamily:'var(--font-display)' }}>
+                    信已送达
+                  </h3>
+                </div>
+
+                <div className="w-full max-w-[260px] rounded-2xl px-4 py-3.5 text-center flex flex-col gap-2"
+                     style={{ background:'rgba(201,162,74,0.08)', border:'1px solid rgba(201,162,74,0.28)' }}>
+                  <p className="text-[26px] font-bold tracking-[0.3em] text-gold-grad"
+                     style={{ fontFamily:'var(--font-display)' }}>
+                    {missionResult.word}
+                  </p>
+                  <p className="text-[10px] font-mono tracking-[0.18em] break-words" style={{ color:'var(--gold-100)' }}>
+                    {missionResult.word.split('').map((ch) => prettyMorse(MORSE_MAP[ch] || '')).join(' / ')}
+                  </p>
+                  <div className="flex justify-center gap-4 pt-1 text-[11px]" style={{ color:'var(--text-muted)' }}>
+                    <span>用时 <b style={{ color:'var(--gold-100)' }}>{missionResult.time}s</b></span>
+                    <span>重发 <b style={{ color: missionResult.retries === 0 ? '#a7f3d0' : 'var(--gold-100)' }}>{missionResult.retries}</b> 次</span>
+                    <span>得分 <b style={{ color:'var(--gold-100)' }}>{missionResult.score}</b></span>
+                  </div>
+                  {missionResult.retries === 0 ? (
+                    <p className="text-[10px] tracking-wide" style={{ color:'#a7f3d0' }}>✦ 完美电报 · 一次不差</p>
+                  ) : null}
+                </div>
+
+                <div className="flex gap-2.5" onPointerDown={(e) => e.stopPropagation()}>
+                  <button type="button" onClick={() => startGame('mission', missionWord)}
+                          className="btn-tactile px-5 py-2.5 rounded-full text-[12px] font-semibold"
+                          style={{ background:'rgba(201,162,74,0.15)', border:'1px solid rgba(201,162,74,0.35)',
+                                   color:'var(--gold-100)' }}>
+                    重寄这封
+                  </button>
+                  <button type="button" onClick={() => { setPhase('idle'); setMissionResult(null); }}
+                          className="btn-tactile px-5 py-2.5 rounded-full text-[12px] font-semibold"
+                          style={{ background:'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)',
+                                   color:'#1a1a1a' }}>
+                    再写一封
+                  </button>
+                </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {/* ── 结算：信息卡片 + 操作区 ── */}
+                <div className="absolute inset-0" aria-hidden="true" onClick={restart} />
+
+                <div className="relative flex flex-col items-center gap-4 pointer-events-none w-full max-w-[300px]">
+                  {/* 成绩卡片 */}
+                  <div
+                    className="w-full rounded-3xl px-5 py-5 flex flex-col items-center gap-4"
+                    style={{
+                      background: 'rgba(20,20,24,0.88)',
+                      border: '1px solid rgba(201,162,74,0.28)',
+                      backdropFilter: 'blur(14px)',
+                      boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+                    }}
+                  >
+                    <div className="text-center">
+                      <p className="text-[10px] tracking-[0.28em] uppercase mb-2" style={{ color: 'var(--gold-400)' }}>
+                        {gameMode === 'mission' ? `「${missionWord}」寄失了` : '送信中断'}
+                      </p>
+                      <p
+                        className="text-[56px] font-bold leading-none text-gold-grad tabular-nums"
+                        style={{ fontFamily: 'var(--font-display)', textShadow: '0 0 36px rgba(242,210,122,0.3)' }}
+                      >
+                        {score}
+                      </p>
+                      <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>本局得分</p>
+                    </div>
+
+                    <div className="w-full flex items-center justify-around text-center">
+                      <div>
+                        <p className="text-[10px] tracking-wider mb-0.5" style={{ color: 'var(--text-faint)' }}>飞行</p>
+                        <p className="text-base font-semibold tabular-nums" style={{ color: 'var(--gold-100)' }}>{altitude}m</p>
+                      </div>
+                      <div className="w-px h-9" style={{ background: 'rgba(201,162,74,0.22)' }} aria-hidden="true" />
+                      <div>
+                        <p className="text-[10px] tracking-wider mb-0.5" style={{ color: 'var(--text-faint)' }}>最佳</p>
+                        <p
+                          className="text-base font-semibold tabular-nums"
+                          style={{ color: score >= best && score > 0 ? 'var(--gold-100)' : 'var(--text-muted)' }}
+                        >
+                          {best}
+                        </p>
+                      </div>
+                    </div>
+
+                    {score >= best && score > 0 ? (
+                      <p className="text-[11px] font-semibold tracking-[0.12em] text-gold-grad">✦ 新纪录</p>
+                    ) : null}
+                  </div>
+
+                  {/* 操作区 */}
+                  <div
+                    className="flex flex-col items-center gap-3 pointer-events-auto w-full"
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={restart}
+                      className="btn-tactile w-full py-3.5 rounded-full text-[15px] font-bold flex items-center justify-center gap-2 tracking-[0.12em] idle-cta"
+                      style={{
+                        background: 'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)',
+                        color: '#1a1a1a',
+                        boxShadow: '0 6px 28px rgba(217,201,163,0.45)',
+                      }}
+                    >
+                      <RotateCcw className="w-5 h-5 flex-shrink-0" />
+                      <span>{gameMode === 'mission' ? '重寄这封' : '再来一局'}</span>
+                    </button>
+
+                    <div className="flex items-center justify-center gap-2 flex-wrap">
+                      {gameMode === 'mission' ? (
+                        <button
+                          type="button"
+                          onClick={() => { setPhase('idle'); setMissionResult(null); }}
+                          className="text-[12px] px-4 py-2 rounded-full btn-tactile whitespace-nowrap"
+                          style={{
+                            color: 'var(--gold-100)',
+                            background: 'rgba(201,162,74,0.10)',
+                            border: '1px solid rgba(201,162,74,0.25)',
+                          }}
+                        >
+                          换一封信
+                        </button>
+                      ) : !nameSaved ? (
+                        <button
+                          type="button"
+                          onClick={handleSaveName}
+                          className="text-[12px] px-4 py-2 rounded-full btn-tactile flex items-center gap-1.5 whitespace-nowrap"
+                          style={{
+                            color: 'var(--gold-100)',
+                            background: 'rgba(201,162,74,0.10)',
+                            border: '1px solid rgba(201,162,74,0.25)',
+                          }}
+                        >
+                          <Trophy className="w-3.5 h-3.5 flex-shrink-0" />
+                          <span>记入战绩榜</span>
+                        </button>
+                      ) : (
+                        <p className="text-[11px] tracking-wide" style={{ color: 'var(--gold-300)' }}>✦ 已记录到战绩榜</p>
+                      )}
+                    </div>
+
+                    {gameMode !== 'mission' && !nameSaved ? (
+                      <input
+                        type="text"
+                        maxLength={10}
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveName(); }}
+                        placeholder="留下信使名（选填）"
+                        className="w-full rounded-xl px-3 py-2 text-[12px] text-center outline-none"
+                        style={{
+                          background: 'rgba(255,255,255,0.05)',
+                          border: '1px solid rgba(201,162,74,0.22)',
+                          color: 'var(--text)',
+                          caretColor: 'var(--gold-300)',
+                        }}
+                      />
+                    ) : null}
+
+                    <p className="text-[10px] tracking-wide" style={{ color: 'var(--text-faint)' }}>
+                      点击空白处快速重开
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        ) : null}
+
+        <style>{`
+          .floater { animation: floaterRise 1.35s var(--ease-out) forwards; }
+          .floater-big { animation: floaterRiseBig 1.55s var(--ease-out) forwards; }
+          @keyframes floaterRise {
+            0%   { opacity: 0; transform: translate(-50%, 8px) scale(0.88); }
+            16%  { opacity: 1; transform: translate(-50%, -4px) scale(1.08); }
+            100% { opacity: 0; transform: translate(-50%, -48px) scale(1); }
+          }
+          @keyframes floaterRiseBig {
+            0%   { opacity: 0; transform: translate(-50%, 12px) scale(0.82); }
+            14%  { opacity: 1; transform: translate(-50%, -6px) scale(1.14); }
+            22%  { transform: translate(-50%, -2px) scale(1.08); }
+            100% { opacity: 0; transform: translate(-50%, -72px) scale(1.02); }
+          }
+          .combo-glow { animation: comboPulse 1.2s ease-in-out infinite; }
+          @keyframes comboPulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(242,210,122,0.35); }
+            50%      { box-shadow: 0 0 18px rgba(242,210,122,0.65); }
+          }
+          .combo-fever { animation: comboPulse 1.2s ease-in-out infinite, comboFever 0.7s ease-in-out infinite; }
+          @keyframes comboFever {
+            0%, 100% { transform: scale(1); }
+            50%      { transform: scale(1.08); }
+          }
+          .banner { animation: bannerPop 1.5s var(--ease-out) forwards; }
+          @keyframes bannerPop {
+            0%   { opacity: 0; transform: translate(-50%, 14px) scale(0.85); }
+            14%  { opacity: 1; transform: translate(-50%, 0) scale(1.06); }
+            22%  { transform: translate(-50%, 0) scale(1); }
+            100% { opacity: 0; transform: translate(-50%, -10px) scale(1); }
+          }
+          .idle-cta { animation: ctaBreath 2.2s ease-in-out infinite; }
+          @keyframes ctaBreath {
+            0%, 100% { transform: scale(1);     box-shadow: 0 6px 28px rgba(217,201,163,0.45); }
+            50%      { transform: scale(1.035); box-shadow: 0 8px 36px rgba(217,201,163,0.65); }
+          }
+        `}</style>
+      </div>
+
+      {/* 摩斯字典弹层 */}
+      {showDict && (
+        <div className="absolute inset-0 z-50 flex flex-col justify-start sheet-backdrop"
+             style={{ background:'rgba(8,7,9,0.72)', backdropFilter:'blur(6px)' }}
+             onClick={() => setShowDict(false)}>
+          <div className="rounded-b-[28px] px-4 pt-4 pb-6 sheet-panel-top"
+               style={{ background:'var(--surface)', border:'1px solid var(--border-subtle)',
+                        borderTop:'none', maxHeight:'82%', overflowY:'auto' }}
+               onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <BookOpen className="w-4 h-4" style={{ color:'var(--gold-300)' }} />
+                <span className="text-[13px] font-semibold tracking-[0.12em]"
+                      style={{ color:'var(--gold-100)', fontFamily:'var(--font-display)' }}>
+                  摩斯字典
+                </span>
+              </div>
+              <button type="button" onClick={() => setShowDict(false)}
+                      className="btn-icon w-8 h-8 flex items-center justify-center rounded-full"
+                      style={{ color:'var(--text-muted)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[10px] mb-3 tracking-wide" style={{ color:'var(--text-faint)' }}>
+              · = 短按（di）　— = 长按（da）
+            </p>
+            <div className="grid grid-cols-4 gap-1.5">
+              {Object.entries(MORSE_MAP).sort().map(([letter, code]) => (
+                <div key={letter} className="flex flex-col items-center py-2 px-1 rounded-xl"
+                     style={{ background:'var(--surface-sunken)', border:'1px solid var(--border-subtle)' }}>
+                  <span className="text-[16px] font-bold leading-none"
+                        style={{ color:'var(--text)', fontFamily:'var(--font-display)' }}>
+                    {letter}
+                  </span>
+                  <span className="text-[11px] font-mono mt-1 tracking-widest" style={{ color:'var(--gold-100)' }}>
+                    {code.replace(/\./g, '·').replace(/-/g, '—')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 背景音乐：从声印「我的收藏」选择 */}
+      {showBgmPicker && (
+        <div className="absolute inset-0 z-50 flex flex-col justify-end sheet-backdrop"
+             style={{ background: 'rgba(8,7,9,0.72)', backdropFilter: 'blur(6px)' }}
+             onClick={() => setShowBgmPicker(false)}>
+          <div className="rounded-t-[28px] px-4 pt-4 pb-6 flex flex-col max-h-[78%] sheet-panel"
+               style={{ background: 'var(--surface)', border: '1px solid var(--border-subtle)', borderBottom: 'none' }}
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Music2 className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+                <span className="text-[13px] font-semibold tracking-[0.12em] truncate"
+                      style={{ color: 'var(--gold-100)', fontFamily: 'var(--font-display)' }}>
+                  背景音乐
+                </span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
+                      style={{ background: 'rgba(201,162,74,0.12)', color: 'var(--text-muted)',
+                               border: '1px solid rgba(201,162,74,0.22)' }}>
+                  我的收藏
+                </span>
+              </div>
+              <button type="button" onClick={() => setShowBgmPicker(false)}
+                      className="btn-icon w-8 h-8 flex items-center justify-center rounded-full flex-shrink-0"
+                      style={{ color: 'var(--text-muted)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-[10px] mb-3 leading-relaxed" style={{ color: 'var(--text-faint)' }}>
+              与「声印」页收藏列表同步；选中的歌曲会在送信时循环播放（可点喇叭静音）。
+            </p>
+
+            <button type="button" onClick={clearBgmTrack}
+                    className="w-full mb-2 py-2.5 rounded-xl text-[12px] font-medium btn-tactile row-tappable"
+                    style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)',
+                             color: 'var(--text-muted)' }}>
+              不使用背景音乐
+            </button>
+
+            {bgmTrack ? (
+              <div className="flex items-center justify-between gap-2 mb-3 px-3 py-2 rounded-xl"
+                   style={{ background: 'rgba(201,162,74,0.08)', border: '1px solid rgba(201,162,74,0.22)' }}>
+                <span className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
+                  正在播放：{(bgmTrack.word || '收藏').toUpperCase()}
+                </span>
+                <button type="button" onClick={toggleBgmMute}
+                        className="btn-tactile px-2 py-1 rounded-lg flex items-center gap-1 text-[11px] flex-shrink-0"
+                        style={{ color: 'var(--gold-100)' }}>
+                  {bgmMuted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+                  {bgmMuted ? '恢复' : '静音'}
+                </button>
+              </div>
+            ) : null}
+
+            <div className="overflow-y-auto flex-1 -mx-1 px-1">
+              {savedBgmList.length === 0 ? (
+                <div className="py-10 text-center">
+                  <p className="text-[12px]" style={{ color: 'var(--text-faint)' }}>
+                    收藏里还没有歌曲
+                  </p>
+                  <p className="text-[11px] mt-2" style={{ color: 'var(--text-faint)' }}>
+                    先到「声印」生成或加载音乐，点 ♥ 收藏后再来这里选用
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5 pb-2">
+                  {[...savedBgmList].reverse().map((track, i) => {
+                    const active = bgmTrack?.audio_url === track.audio_url;
+                    const title = (track.word || '声印').toUpperCase();
+                    return (
+                      <button type="button" key={track.audio_url + i}
+                              onClick={() => selectBgmTrack(track)}
+                              className="flex items-center gap-3 w-full text-left px-3 py-2.5 rounded-xl transition-colors row-tappable"
+                              style={{
+                                background: active
+                                  ? 'linear-gradient(135deg,rgba(201,162,74,0.14) 0%,rgba(201,162,74,0.04) 100%)'
+                                  : 'var(--surface-sunken)',
+                                border: active
+                                  ? '1px solid rgba(201,162,74,0.30)'
+                                  : '1px solid var(--border-subtle)',
+                              }}>
+                        <span className="flex-1 min-w-0">
+                          <span className="text-[13px] font-semibold block truncate"
+                                style={{ color: active ? 'var(--gold-100)' : 'var(--text)',
+                                         fontFamily: 'var(--font-display)' }}>
+                            {title}
+                          </span>
+                          <span className="text-[10px] mt-0.5 block truncate" style={{ color: 'var(--text-faint)' }}>
+                            {track.style_label || '声印'}
+                          </span>
+                        </span>
+                        {active ? (
+                          <Check className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 战绩榜单弹层 */}
+      {showBoard && (
+        <div className="absolute inset-0 z-50 flex flex-col justify-start sheet-backdrop"
+             style={{ background:'rgba(8,7,9,0.72)', backdropFilter:'blur(6px)' }}
+             onClick={() => setShowBoard(false)}>
+          <div className="rounded-b-[28px] px-4 pt-4 pb-6 sheet-panel-top"
+               style={{ background:'var(--surface)', border:'1px solid var(--border-subtle)',
+                        borderTop:'none', maxHeight:'80%', overflowY:'auto' }}
+               onClick={e => e.stopPropagation()}>
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Trophy className="w-4 h-4" style={{ color:'var(--gold-300)' }} />
+                <span className="text-[13px] font-semibold tracking-[0.12em]"
+                      style={{ color:'var(--gold-100)', fontFamily:'var(--font-display)' }}>
+                  战绩榜
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {board.length > 0 && (
+                  <button type="button"
+                          className="text-[10px] px-2 py-1 rounded-lg"
+                          style={{ color:'var(--text-faint)', background:'rgba(255,255,255,0.04)',
+                                   border:'1px solid var(--border-subtle)' }}
+                          onClick={() => { setBoard([]); saveBoard([]); }}>
+                    清空
+                  </button>
+                )}
+                <button type="button" onClick={() => setShowBoard(false)}
+                        className="btn-icon w-8 h-8 flex items-center justify-center rounded-full"
+                        style={{ color:'var(--text-muted)' }}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {board.length === 0 ? (
+              <div className="py-10 text-center">
+                <p className="text-[12px]" style={{ color:'var(--text-faint)' }}>
+                  还没有战绩，快去把信送远一点吧
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {board.map((entry, i) => (
+                  <div key={i}
+                       className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
+                       style={{
+                         background: i === 0
+                           ? 'linear-gradient(135deg,rgba(201,162,74,0.14) 0%,rgba(201,162,74,0.04) 100%)'
+                           : 'var(--surface-sunken)',
+                         border: i === 0
+                           ? '1px solid rgba(201,162,74,0.30)'
+                           : '1px solid var(--border-subtle)',
+                       }}>
+                    {/* 名次 */}
+                    <span className="w-5 text-center text-[12px] font-bold flex-shrink-0"
+                          style={{ color: i === 0 ? 'var(--gold-300)' : i === 1 ? '#C0C0C0' : i === 2 ? '#CD7F32' : 'var(--text-faint)',
+                                   fontFamily:'var(--font-display)' }}>
+                      {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}
+                    </span>
+                    {/* 名字 */}
+                    <span className="flex-1 text-[13px] font-medium truncate"
+                          style={{ color:'var(--text)' }}>
+                      {entry.name}
+                    </span>
+                    {/* 日期 */}
+                    <span className="text-[10px] flex-shrink-0" style={{ color:'var(--text-faint)' }}>
+                      {entry.date}
+                    </span>
+                    {/* 分数 */}
+                    <span className="text-[15px] font-bold font-mono flex-shrink-0 w-10 text-right"
+                          style={{ color: i === 0 ? 'var(--gold-300)' : 'var(--text)',
+                                   fontFamily:'var(--font-display)' }}>
+                      {entry.score}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/* =========================================================
+   绘制工具（竖屏登云版）
+   drawCloud：sy 为云的落点线（窗口中心）在屏幕上的 Y。
+   云的视觉厚度 = 落点窗口 winH（诚实反映容错范围）。
+   颜色语言：金=· dot / 蓝=— dash / 白=both
+   ========================================================= */
+const CLOUD_COLORS = {
+  dot:  { hue: 44,  edge: 'rgba(242,210,122,',  text: 'rgba(242,210,122,' },
+  dash: { hue: 205, edge: 'rgba(125,211,252,',  text: 'rgba(186,230,253,' },
+  both: { hue: 40,  edge: 'rgba(255,245,216,',  text: 'rgba(255,245,216,' },
+};
+
+const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
+  const cx = p.cx, w = p.w, winH = p.winH;
+  const visH = Math.max(34, Math.min(winH * 0.6, 52));
+  const top = sy - visH / 2;
+  const drawKind = kindOverride || p.kind;
+  const col = CLOUD_COLORS[drawKind] || CLOUD_COLORS.both;
+  const isDash = drawKind === 'dash';
+  const isBoth = drawKind === 'both';
+
+  /* ---- 容错窗口雾带（半透明，收窄绘制，保持精致）---- */
+  const mist = ctx.createLinearGradient(0, top, 0, top + visH);
+  const mistCol = isDash ? '125,211,252' : isBoth ? '235,228,210' : '242,210,122';
+  mist.addColorStop(0,   `rgba(${mistCol},0.02)`);
+  mist.addColorStop(0.5, `rgba(${mistCol},0.10)`);
+  mist.addColorStop(1,   `rgba(${mistCol},0.02)`);
+  ctx.fillStyle = mist;
+  roundRect(ctx, cx - w / 2, top, w, visH, 14); ctx.fill();
+
+  /* ---- 云体：三团椭圆叠出蓬松感，中线即完美落点。dip=着陆下压回弹 ---- */
+  const dip = p.dip || 0;
+  const puffScale = p.sizeKey === 'narrow' || p.sizeKey === 'drift' ? 0.82
+    : p.sizeKey === 'wide' ? 1.14 : 1;
+  const puffColor = (a) => isDash
+    ? `rgba(58, 76, 104, ${a})`
+    : isBoth ? `rgba(78, 74, 66, ${a})` : `rgba(84, 70, 44, ${a})`;
+  ctx.fillStyle = puffColor(0.92);
+  ctx.beginPath();
+  ctx.ellipse(cx,            sy + 3 + dip,       w * 0.34 * puffScale, CLOUD_CORE_H * 0.62, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx - w * 0.26, sy + 5 + dip * 0.7, w * 0.20 * puffScale, CLOUD_CORE_H * 0.46, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx + w * 0.26, sy + 5 + dip * 0.7, w * 0.20 * puffScale, CLOUD_CORE_H * 0.46, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // 云顶高光（随中央下压）
+  ctx.fillStyle = puffColor(0.5);
+  ctx.beginPath();
+  ctx.ellipse(cx, sy - 1 + dip * 0.5, w * 0.30, CLOUD_CORE_H * 0.34, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  /* ---- 完美落点线：云中央一道发光横线 ---- */
+  const lineGrad = ctx.createLinearGradient(cx - w * 0.32, 0, cx + w * 0.32, 0);
+  lineGrad.addColorStop(0,   `${col.edge}0)`);
+  lineGrad.addColorStop(0.5, `${col.edge}0.85)`);
+  lineGrad.addColorStop(1,   `${col.edge}0)`);
+  ctx.strokeStyle = lineGrad;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(cx - w * 0.32, sy + 0.5);
+  ctx.lineTo(cx + w * 0.32, sy + 0.5);
+  ctx.stroke();
+
+  /* ---- 符号徽标：云中央 ·/—/·— ---- */
+  ctx.textAlign = 'center';
+  if (p.dual && p.requiredSym) {
+    ctx.font = 'bold 13px JetBrains Mono, monospace';
+    ctx.fillStyle = 'rgba(167,243,208,0.95)';
+    ctx.fillText(p.requiredSym === '.' ? '· ?' : '— ?', cx, sy - CLOUD_CORE_H * 0.5 - 6);
+  } else if (isBoth) {
+    ctx.font = 'bold 11px JetBrains Mono, monospace';
+    ctx.fillStyle = `${col.text}0.85)`;
+    ctx.fillText('· —', cx, sy - CLOUD_CORE_H * 0.5 - 6);
+  } else {
+    ctx.font = 'bold 15px JetBrains Mono, monospace';
+    ctx.fillStyle = `${col.text}0.95)`;
+    ctx.fillText(drawKind === 'dot' ? '·' : '—', cx, sy - CLOUD_CORE_H * 0.5 - 6);
+  }
+
+  /* ---- 特殊云角标 ---- */
+  const tagY = top + 9;
+  ctx.font = '7px JetBrains Mono, monospace';
+  ctx.textAlign = 'left';
+  if (p.fragile) { ctx.fillStyle = 'rgba(252,165,165,0.85)'; ctx.fillText('碎', cx - w / 2 + 4, tagY); }
+  if (p.listen)  { ctx.fillStyle = 'rgba(196,181,253,0.9)'; ctx.fillText('听', cx - w / 2 + (p.fragile ? 14 : 4), tagY); }
+  if (p.relay)   { ctx.fillStyle = 'rgba(186,230,253,0.9)'; ctx.fillText('中继', cx + w / 2 - 22, tagY); }
+  if (p.waxSeal) { ctx.fillStyle = 'rgba(242,210,122,0.9)'; ctx.fillText('蜡', cx + w / 2 - 10, tagY); }
+  if (p.isSummit) {
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 9px JetBrains Mono, monospace';
+    ctx.fillStyle = 'rgba(242,210,122,0.95)';
+    ctx.fillText('天门', cx, top - 4);
+    const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 300);
+    ctx.strokeStyle = `rgba(242,210,122,${pulse})`;
+    ctx.lineWidth = 2;
+    roundRect(ctx, cx - w / 2 - 4, top - 6, w + 8, visH + 12, 18); ctx.stroke();
+    const beam = ctx.createLinearGradient(0, top - 100, 0, top);
+    beam.addColorStop(0, 'rgba(242,210,122,0)');
+    beam.addColorStop(1, `rgba(242,210,122,${0.12 + 0.06 * Math.sin(Date.now() / 400)})`);
+    ctx.fillStyle = beam;
+    ctx.fillRect(cx - w / 2, top - 100, w, 100);
+  }
+  if (p.isBranch) {
+    ctx.font = '8px JetBrains Mono, monospace';
+    ctx.fillStyle = p.branchCorrect ? 'rgba(167,243,208,0.9)' : 'rgba(252,165,165,0.85)';
+    ctx.textAlign = 'center';
+    ctx.fillText(p.branchCorrect ? '正道' : '岔路', cx, top - 5);
+  }
+  if (isNext) {
+    const pulse = 0.35 + 0.30 * Math.sin(Date.now() / 260);
+    ctx.strokeStyle = `rgba(167,243,208,${pulse})`;
+    ctx.lineWidth = 1.8;
+    roundRect(ctx, cx - w / 2 - 3, top - 3, w + 6, visH + 6, 16); ctx.stroke();
+    // 落点指示线
+    ctx.strokeStyle = `rgba(167,243,208,${0.15 + pulse * 0.25})`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(cx, sy + CLOUD_CORE_H * 0.5 + 4);
+    ctx.lineTo(cx, sy + CLOUD_CORE_H * 0.5 + 22);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  /* ---- 漂移云：两侧方向箭头 ---- */
+  if (p.moving) {
+    const sway = Math.cos(p.phase || 0);
+    ctx.font = '12px JetBrains Mono, monospace';
+    ctx.fillStyle = `rgba(186,230,253,${sway < 0 ? 0.9 : 0.25})`;
+    ctx.fillText('‹', cx - w / 2 - 10, sy + 4);
+    ctx.fillStyle = `rgba(186,230,253,${sway > 0 ? 0.9 : 0.25})`;
+    ctx.fillText('›', cx + w / 2 + 10, sy + 4);
+  }
+
+  /* ---- 尺寸档角标（窄/宽） ---- */
+  if (p.sizeKey === 'narrow' || p.sizeKey === 'wide') {
+    ctx.font = '8px JetBrains Mono, monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.textAlign = p.sizeKey === 'narrow' ? 'left' : 'right';
+    ctx.fillText(p.sizeKey === 'narrow' ? '窄' : '宽', p.sizeKey === 'narrow' ? cx - w / 2 + 4 : cx + w / 2 - 4, top + 10);
+    ctx.textAlign = 'center';
+  }
+
+  /* ---- 字母封蜡云：字母徽章 ---- */
+  if (p.isLetterEnd && p.letter) {
+    ctx.font = 'bold 12px JetBrains Mono, monospace';
+    ctx.fillStyle = 'rgba(255,245,216,0.95)';
+    ctx.fillText(p.letter, cx + w * 0.38, sy - 10);
+    ctx.strokeStyle = 'rgba(242,210,122,0.55)';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath(); ctx.arc(cx + w * 0.38, sy - 14, 9.5, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  /* ---- 终点信箱云 ---- */
+  if (p.isGoal) {
+    const pulse = 0.55 + 0.35 * Math.sin(Date.now() / 300);
+    ctx.strokeStyle = `rgba(242,210,122,${pulse})`;
+    ctx.lineWidth = 1.8;
+    roundRect(ctx, cx - w / 2 - 2, top - 2, w + 4, visH + 4, 16); ctx.stroke();
+
+    // 信箱立在云上
+    const mTop = sy - CLOUD_CORE_H * 0.5 - 52;
+    ctx.strokeStyle = '#7A5B1F';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx, sy - 4); ctx.lineTo(cx, mTop + 22); ctx.stroke();
+    const bw = 36, bh = 24;
+    const bGrad = ctx.createLinearGradient(0, mTop, 0, mTop + bh);
+    bGrad.addColorStop(0, '#C9A24A');
+    bGrad.addColorStop(1, '#7A5B1F');
+    ctx.fillStyle = bGrad;
+    roundRect(ctx, cx - bw / 2, mTop, bw, bh, 6); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,245,216,0.8)';
+    ctx.lineWidth = 1.2;
+    roundRect(ctx, cx - bw / 2, mTop, bw, bh, 6); ctx.stroke();
+    ctx.fillStyle = '#1a1410';
+    roundRect(ctx, cx - 11, mTop + 9, 22, 4, 2); ctx.fill();
+    // 小红旗
+    ctx.fillStyle = '#fca5a5';
+    ctx.beginPath();
+    ctx.moveTo(cx + bw / 2 - 2, mTop - 9);
+    ctx.lineTo(cx + bw / 2 + 9, mTop - 5);
+    ctx.lineTo(cx + bw / 2 - 2, mTop - 1);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#fda4af';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(cx + bw / 2 - 2, mTop - 10); ctx.lineTo(cx + bw / 2 - 2, mTop + 2); ctx.stroke();
+
+    // 上升光柱
+    const beam = ctx.createLinearGradient(0, top - 130, 0, top);
+    beam.addColorStop(0, 'rgba(242,210,122,0)');
+    beam.addColorStop(1, `rgba(242,210,122,${0.10 + 0.05 * Math.sin(Date.now() / 400)})`);
+    ctx.fillStyle = beam;
+    ctx.fillRect(cx - w / 2, top - 130, w, 130);
+  }
+
+  /* ---- 云下阴影雾 ---- */
+  const under = ctx.createLinearGradient(0, sy + CLOUD_CORE_H * 0.5, 0, sy + CLOUD_CORE_H * 0.5 + 16);
+  under.addColorStop(0, 'rgba(0,0,0,0.30)');
+  under.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = under;
+  ctx.fillRect(cx - w * 0.36, sy + CLOUD_CORE_H * 0.5, w * 0.72, 16);
+};
+
+/* ---------- 星途信使（猫头鹰造型）
+   screenFootY：脚底所在屏幕 Y ---------- */
+const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
+  const squash = c.squash;
+  const cw = OWL_W * (1 + squash * 0.22);
+  const ch = OWL_H * (1 - squash * 0.36);
+  const wingOpen = Math.max(0, Math.min(1, c.wingOpen || 0));
+  const pose = c.pose || 'idle';
+  const isGlide = pose === 'glide' || pose === 'tumble';
+  const isLand = pose === 'land';
+  const flap = Math.sin(c.flapPhase || 0);
+
+  ctx.save();
+  ctx.translate(c.x, screenFootY);
+  ctx.rotate(c.rot);
+
+  const shadowAlpha = c.landed && !isGlide ? 0.34 : isGlide ? 0.14 : 0.22;
+  const shadowW = cw * 0.5 + Math.min(wingOpen * (isGlide ? 18 : 12), 14);
+  ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+  ctx.beginPath();
+  ctx.ellipse(0, 5, shadowW, isGlide ? 5 : 4, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (wingOpen > 0.04) {
+    const ws  = cw * (isGlide ? 0.62 + wingOpen * 1.05 : 0.50 + wingOpen * 0.94);
+    const wy  = isGlide ? flap * 2.2 : flap * (4 + wingOpen * 9);
+
+    const drawWing = (sign) => {
+      const rootX = sign * cw * 0.38;
+      const rootY = -ch * 0.56;
+      const tipX  = sign * ws;
+      const tipY  = isGlide
+        ? -ch * (0.38 + wingOpen * 0.08) + wy
+        : -ch * (0.50 + wingOpen * 0.14) + wy;
+
+      ctx.beginPath();
+      ctx.moveTo(rootX, rootY);
+      if (isGlide) {
+        ctx.bezierCurveTo(
+          sign * ws * 0.42, -ch * (0.48 + wingOpen * 0.06) + wy,
+          sign * ws * 0.92, -ch * (0.40 + wingOpen * 0.04) + wy,
+          tipX, tipY,
+        );
+        ctx.bezierCurveTo(
+          sign * ws * 0.78, -ch * 0.08 + wy * 0.3,
+          sign * ws * 0.38, -ch * 0.04 + wy * 0.2,
+          sign * cw * 0.40, -ch * 0.28,
+        );
+      } else {
+        ctx.bezierCurveTo(
+          sign * ws * 0.50, -ch * (0.72 + wingOpen * 0.17) + wy,
+          sign * ws * 0.85, -ch * (0.60 + wingOpen * 0.11) + wy,
+          tipX, tipY,
+        );
+        ctx.bezierCurveTo(
+          sign * ws * 0.70, -ch * 0.12 + wy * 0.44,
+          sign * ws * 0.34, -ch * 0.05 + wy * 0.24,
+          sign * cw * 0.40, -ch * 0.26,
+        );
+      }
+      ctx.closePath();
+
+      // 渐变：翼根偏紫，翼尖更深
+      const wGrad = ctx.createLinearGradient(rootX, rootY, tipX, tipY);
+      wGrad.addColorStop(0,   'rgba(50, 42, 70, 0.97)');
+      wGrad.addColorStop(0.5, 'rgba(32, 26, 50, 0.98)');
+      wGrad.addColorStop(1,   'rgba(18, 14, 30, 0.96)');
+      ctx.fillStyle = wGrad;
+      ctx.fill();
+
+      // ── 金色前缘描边（主羽骨） ──
+      ctx.strokeStyle = `rgba(168, 124, 48, ${0.45 + wingOpen * 0.32})`;
+      ctx.lineWidth = 1.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(rootX, rootY);
+      ctx.bezierCurveTo(
+        sign * ws * 0.50, -ch * (0.72 + wingOpen * 0.17) + wy,
+        sign * ws * 0.85, -ch * (0.60 + wingOpen * 0.11) + wy,
+        tipX, tipY,
+      );
+      ctx.stroke();
+
+      // ── 次羽纹（2条，增加层次感）──
+      ctx.strokeStyle = `rgba(90, 72, 120, ${0.30 + wingOpen * 0.18})`;
+      ctx.lineWidth = 0.9;
+      for (let ri = 1; ri <= 2; ri++) {
+        const t = ri / 3;
+        ctx.beginPath();
+        ctx.moveTo(sign * cw * (0.30 + t * 0.10), rootY * (0.72 + t * 0.22));
+        ctx.quadraticCurveTo(
+          sign * ws * (0.36 + t * 0.28), -ch * (0.50 + wingOpen * 0.07 * t) + wy * 0.55,
+          sign * ws * (0.52 + t * 0.20), -ch * (0.20 + t * 0.05) + wy * 0.38,
+        );
+        ctx.stroke();
+      }
+    };
+
+    drawWing(-1);  // 左翼
+    drawWing(1);   // 右翼
+  }
+  // ──────────────────────────────────────────────────────────
+
+  // 身体（蛋形）
+  const bodyGrad = ctx.createLinearGradient(0, -ch, 0, 0);
+  bodyGrad.addColorStop(0, '#3a3340');
+  bodyGrad.addColorStop(1, '#0e0a14');
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.moveTo(0, -ch);
+  ctx.bezierCurveTo(-cw * 0.55, -ch * 0.85, -cw * 0.55, -ch * 0.05, 0, 0);
+  ctx.bezierCurveTo( cw * 0.55, -ch * 0.05,  cw * 0.55, -ch * 0.85, 0, -ch);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(242,210,122,0.32)';
+  ctx.lineWidth = 1.1;
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(242,210,122,0.10)';
+  ctx.beginPath();
+  ctx.ellipse(0, -ch * 0.32, cw * 0.30, ch * 0.26, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 角羽
+  const tuftY = -ch + 1;
+  const tuftX = cw * 0.30;
+  ctx.fillStyle = '#1a1620';
+  ctx.beginPath();
+  ctx.moveTo(-tuftX, tuftY); ctx.lineTo(-tuftX - 4, tuftY - 9); ctx.lineTo(-tuftX + 4, tuftY - 1);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(tuftX, tuftY);  ctx.lineTo(tuftX + 4, tuftY - 9);  ctx.lineTo(tuftX - 4, tuftY - 1);
+  ctx.closePath(); ctx.fill();
+
+  // 眼睛
+  const eyeY  = -ch * 0.72;
+  const eyeR  = Math.min(cw * 0.24, 6.8);
+  const eyeOff = cw * 0.22;
+  const blinkK = 1 - c.blink;
+  ctx.fillStyle = '#fdf6e0';
+  ctx.beginPath();
+  ctx.ellipse(-eyeOff, eyeY, eyeR, eyeR * blinkK, 0, 0, Math.PI * 2);
+  ctx.ellipse( eyeOff, eyeY, eyeR, eyeR * blinkK, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (blinkK > 0.2) {
+    ctx.fillStyle = '#d4a747';
+    ctx.beginPath();
+    ctx.ellipse(-eyeOff, eyeY, eyeR * 0.7, eyeR * 0.7 * blinkK, 0, 0, Math.PI * 2);
+    ctx.ellipse( eyeOff, eyeY, eyeR * 0.7, eyeR * 0.7 * blinkK, 0, 0, Math.PI * 2);
+    ctx.fill();
+    const pupilR = eyeR * (0.38 + squash * 0.32);
+    ctx.fillStyle = '#0a0808';
+    ctx.beginPath();
+    ctx.ellipse(-eyeOff, eyeY, pupilR, pupilR * blinkK, 0, 0, Math.PI * 2);
+    ctx.ellipse( eyeOff, eyeY, pupilR, pupilR * blinkK, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(-eyeOff + pupilR * 0.4, eyeY - pupilR * 0.4, 1.2, 0, Math.PI * 2);
+    ctx.arc( eyeOff + pupilR * 0.4, eyeY - pupilR * 0.4, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 喙
+  const beakY = -ch * 0.42;
+  ctx.fillStyle = '#f2d27a';
+  ctx.beginPath();
+  ctx.moveTo(0, beakY + 4.5); ctx.lineTo(-3, beakY); ctx.lineTo(3, beakY);
+  ctx.closePath(); ctx.fill();
+
+  // 脚（着陆时张开抓云）
+  ctx.strokeStyle = '#7A5B1F';
+  ctx.lineWidth = 1.5;
+  const footDrop = isLand ? 2.5 : 0;
+  ctx.beginPath();
+  ctx.moveTo(-3, 0); ctx.lineTo(-4, 3.5 + footDrop);
+  ctx.moveTo( 3, 0); ctx.lineTo( 4, 3.5 + footDrop);
+  ctx.stroke();
+  if (isLand) {
+    ctx.strokeStyle = 'rgba(122,91,31,0.5)';
+    ctx.beginPath();
+    ctx.moveTo(-5, 3.5 + footDrop); ctx.lineTo(-2, 3.5 + footDrop);
+    ctx.moveTo( 5, 3.5 + footDrop); ctx.lineTo( 2, 3.5 + footDrop);
+    ctx.stroke();
+  }
+
+  // 蓄力光晕
+  if (squash > 0.05) {
+    ctx.globalAlpha = squash * 0.7;
+    const g = ctx.createRadialGradient(0, -ch, 1, 0, -ch, 18 + squash * 10);
+    g.addColorStop(0, 'rgba(242,210,122,0.85)');
+    g.addColorStop(1, 'rgba(242,210,122,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, -ch, 18 + squash * 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // SOS 护盾
+  if (hasShield) {
+    ctx.strokeStyle = 'rgba(167,243,208,0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.ellipse(0, -ch / 2, cw * 0.65, ch * 0.62, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  ctx.restore();
+};
+
+const roundRect = (ctx, x, y, w, h, r) => {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
+};
+
+/* 粒子（世界坐标：x 屏幕横向 / alt 海拔，va 向上为正） */
+const spawnSparks = (cx, alt, hue, opts = {}) => {
+  const arr = [];
+  const n = opts.count || 14;
+  const power = opts.power || 1;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + Math.random() * 0.4;
+    const sp = (80 + Math.random() * 130) * power;
+    arr.push({
+      x: cx, alt: alt + 4,
+      vx: Math.cos(a) * sp,
+      va: Math.sin(a) * sp + 60,
+      r: (1.6 + Math.random() * 1.8) * (opts.big ? 1.5 : 1),
+      t: 0,
+      life: (0.7 + Math.random() * 0.4) * (opts.big ? 1.25 : 1),
+      alpha: 1,
+      glow: opts.glow ?? 0.6,
+      color: Math.random() < 0.5 ? `hsl(${hue + 10}, 85%, 72%)` : '#fff2c8',
+    });
+  }
+  return arr;
+};
+
+/* 冲击波光环：落点/起跳/技能扩散圆环（世界坐标，锚定在 alt 上） */
+const makeRing = (cx, alt, opts = {}) => ({
+  x: cx,
+  alt,
+  t: 0,
+  life: opts.life || 0.5,
+  r0: opts.r0 || 6,
+  r1: opts.r1 || 60,
+  width: opts.width || 3,
+  color: opts.color || '242,210,122',
+  ease: opts.ease || 'out',
+});
+
+/* 落云尘扬：落地时向两侧喷出的低矮尘雾 */
+const spawnDust = (cx, alt, power = 1) => {
+  const arr = [];
+  const n = Math.round(8 * power);
+  for (let i = 0; i < n; i++) {
+    const side = i % 2 === 0 ? 1 : -1;
+    const sp = (40 + Math.random() * 90) * power;
+    arr.push({
+      x: cx + side * (4 + Math.random() * 6),
+      alt: alt + Math.random() * 3,
+      vx: side * sp,
+      va: 18 + Math.random() * 34,      // 略微上扬后回落
+      r: 1.4 + Math.random() * 2.4,
+      t: 0,
+      life: 0.34 + Math.random() * 0.3,
+      alpha: 0.7,
+      glow: 0,
+      color: 'rgba(226,222,236,0.7)',
+    });
+  }
+  return arr;
+};
+
+const spawnFlightTrail = (cx, alt, intensity = 1, tint = null) => {
+  const arr = [];
+  const count = Math.max(2, Math.min(12, Math.round(5 * intensity)));
+  for (let i = 0; i < count; i++) {
+    const sp = (32 + Math.random() * 70) * (0.75 + intensity * 0.3);
+    arr.push({
+      x: cx + (Math.random() - 0.5) * 12,
+      alt: alt + (Math.random() - 0.5) * 8,
+      vx: (Math.random() - 0.5) * sp * 0.7,
+      va: -(20 + Math.random() * 50),   // 拖尾向下散
+      r: 0.8 + Math.random() * 1.8,
+      t: 0,
+      life: 0.24 + Math.random() * 0.34,
+      alpha: 0.92,
+      glow: 0.5,
+      color: tint || (Math.random() < 0.72 ? 'rgba(242,210,122,0.95)' : 'rgba(255,245,216,0.92)'),
+    });
+  }
+  return arr;
+};
+
+/* 连击升温：combo 越高，拖尾从暖金渐变到白热 */
+const comboTrailTint = (combo) => {
+  if (combo >= 8) return Math.random() < 0.6 ? 'rgba(255,255,255,0.96)' : 'rgba(191,232,255,0.9)';
+  if (combo >= 5) return Math.random() < 0.6 ? 'rgba(255,245,216,0.96)' : 'rgba(255,214,120,0.92)';
+  return null;
+};
+
+export default JumpGame;

@@ -1,0 +1,174 @@
+{
+  "word": "MI",
+  "display_phrase": "Mission: Impossible",
+  "morse_pretty": "−− / ··",
+  "style_label": "碟中谍主题曲",
+  "with_vocals": false,
+  "audio_url": "/demo/mission.mp3",
+  "intro_duration_ms": 14800,
+  "intro_anim_delay_ms": 6000,
+  "letter_timeline": [
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 1600,
+      "end_ms": 2350,
+      "hero_idx": 0,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 2450,
+      "end_ms": 3000,
+      "hero_idx": 9,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 3200,
+      "end_ms": 3950,
+      "hero_idx": 0,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 4050,
+      "end_ms": 4600,
+      "hero_idx": 9,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 4800,
+      "end_ms": 5550,
+      "hero_idx": 0,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 5650,
+      "end_ms": 6200,
+      "hero_idx": 9,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 6400,
+      "end_ms": 7150,
+      "hero_idx": 0,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 7250,
+      "end_ms": 7800,
+      "hero_idx": 9,
+      "dot_effect": "bloom",
+      "dash_effect": "bloom"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 8000,
+      "end_ms": 8750,
+      "hero_idx": 0,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 8850,
+      "end_ms": 9400,
+      "hero_idx": 9,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 9600,
+      "end_ms": 10350,
+      "hero_idx": 0,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 10450,
+      "end_ms": 11000,
+      "hero_idx": 9,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 11200,
+      "end_ms": 11950,
+      "hero_idx": 0,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 12050,
+      "end_ms": 12600,
+      "hero_idx": 9,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "M",
+      "morse": "--",
+      "morse_pretty": "−−",
+      "start_ms": 12800,
+      "end_ms": 13550,
+      "hero_idx": 0,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    },
+    {
+      "letter": "I",
+      "morse": "..",
+      "morse_pretty": "··",
+      "start_ms": 13650,
+      "end_ms": 14200,
+      "hero_idx": 9,
+      "dot_effect": "hit",
+      "dash_effect": "hit"
+    }
+  ],
+  "demo": true,
+  "demo_caption": "主题曲前奏里 —— M（−−）+ I（··），循环 8 次"
+}

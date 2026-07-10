@@ -1,7 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Play, Pause, Share2, ChevronLeft, ChevronRight, ChevronsRight, ArrowRight, Zap, Shuffle, List, ListOrdered, Repeat, Repeat1, Delete, GraduationCap, Target, Music2, Sparkles, Check, X, Volume2, VolumeX, Flame, RotateCcw } from 'lucide-react';
+import { Play, Pause, Share2, ChevronLeft, ChevronRight, ChevronsRight, ArrowRight, Zap, Shuffle, List, ListOrdered, Repeat, Repeat1, Delete, GraduationCap, Target, Music2, Sparkles, Check, X, Volume2, VolumeX, Flame, RotateCcw, Gamepad2, Download, Heart, MoreHorizontal, BookMarked } from 'lucide-react';
 import { apiUrl } from './api.js';
 import staticQuizData from '../../data/static-quiz.json';
+import JumpGame from './JumpGame.jsx';
+import MorseLetterAnim from './MorseLetterAnim.jsx';
+import { startMorseTone, rampMorseTone, stopMorseTone, getMorseAudioContext } from './morseAudio.js';
 
 // 26 letters -> morse map
 const MORSE_MAP = {
@@ -30,9 +33,8 @@ const CELEBRATION_SLOGANS = [
 ];
 
 const TABS = [
-  { id: 'learn', label: 'Learn', icon: GraduationCap },
-  { id: 'music', label: 'Music', icon: Music2 },
-  { id: 'play',  label: '猜码',  icon: Target },
+  { id: 'music', label: '声印', icon: Music2,        grow: 1 },
+  { id: 'play',  label: '信使', icon: Gamepad2,      grow: 1 },
 ];
 
 /** Gentle haptic — safe (noop where unsupported). */
@@ -41,131 +43,9 @@ const haptic = (pattern = 8) => {
   if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (_) {} }
 };
 
-/* ===== Web Audio 摩斯电报音 —— 温暖 CW 电键音，按下发声、松开停音 ===== */
-let _morseAudioCtx = null;
-let _morseOsc = null;        // 基频振荡器（主，用于停止引用）
-let _morseGain = null;       // 主包络增益（用于停止引用）
-let _morseExtras = [];       // 辅助节点：泛音/次谐波/LFO 等（统一 stop）
-
-const _ensureAudio = () => {
-  if (_morseAudioCtx) return _morseAudioCtx;
-  try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return null;
-    _morseAudioCtx = new Ctx();
-  } catch (_) {
-    _morseAudioCtx = null;
-  }
-  return _morseAudioCtx;
-};
-
-/**
- * 启动电键音：基频 660 Hz 正弦 + 2 次/次谐音（sub + 八度）+ 轻微颤音 + 低通柔化
- * 软包络（~22ms 起音）杜绝爆点；低通滤波削去刺耳高频，听感接近真实 HAM 电报机。
- */
-const startMorseTone = (baseFreq = 660) => {
-  const ctx = _ensureAudio();
-  if (!ctx) return;
-  try {
-    if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
-    // 先停掉上一个残余节点
-    if (_morseOsc) {
-      try { _morseOsc.stop(); } catch (_) {}
-      _morseExtras.forEach(n => { try { n.stop(); } catch (_) {} });
-      _morseOsc = null; _morseGain = null; _morseExtras = [];
-    }
-    const now = ctx.currentTime;
-
-    // 低通柔化（2.6k，Q 低一点不出现峰）
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(2600, now);
-    filter.Q.setValueAtTime(0.6, now);
-
-    // 颤音 LFO（5 Hz，±1.6 cents 深度，活泼但不夸张）
-    const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    lfo.frequency.setValueAtTime(5.0, now);
-    lfoGain.gain.setValueAtTime(1.6, now);
-    lfo.connect(lfoGain);
-
-    // 基频正弦
-    const osc = ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(baseFreq, now);
-    lfoGain.connect(osc.frequency);
-
-    // 2nd 八度泛音，轻微加亮（-26dB 量级）
-    const osc2 = ctx.createOscillator();
-    osc2.type = 'sine';
-    osc2.frequency.setValueAtTime(baseFreq * 2, now);
-    const gain2 = ctx.createGain();
-    gain2.gain.setValueAtTime(0.05, now);
-
-    // sub 次谐音（-23dB），增加厚度
-    const osc3 = ctx.createOscillator();
-    osc3.type = 'sine';
-    osc3.frequency.setValueAtTime(baseFreq * 0.5, now);
-    const gain3 = ctx.createGain();
-    gain3.gain.setValueAtTime(0.07, now);
-
-    // 主增益包络 —— 22ms 软起音
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(0.22, now + 0.022);
-
-    osc.connect(gain);
-    osc2.connect(gain2).connect(gain);
-    osc3.connect(gain3).connect(gain);
-    gain.connect(filter);
-    filter.connect(ctx.destination);
-
-    osc.start(now);
-    osc2.start(now);
-    osc3.start(now);
-    lfo.start(now);
-
-    _morseOsc = osc;
-    _morseGain = gain;
-    _morseExtras = [osc2, osc3, lfo];
-  } catch (_) {}
-};
-
-/** 长按能量递增 —— 随按压强度(0~1)把音色提亮、微升频、滤波打开 */
-const rampMorseTone = (intensity) => {
-  if (!_morseAudioCtx || !_morseOsc || !_morseGain) return;
-  try {
-    const t = _morseAudioCtx.currentTime;
-    // 滤波频率在 2600Hz -> 4600Hz 之间滑动（越长按越明亮）
-    const filters = _morseExtras; // LFO 在此，但无 filter 引用；直接保留当前节点即可
-    // 直接小幅提升主增益 0.22 -> 0.28 制造"蓄力"音量感
-    _morseGain.gain.cancelScheduledValues(t);
-    _morseGain.gain.setTargetAtTime(0.22 + intensity * 0.06, t, 0.08);
-    // 基频轻微上滑 660 -> 700 Hz
-    _morseOsc.frequency.cancelScheduledValues(t);
-    _morseOsc.frequency.setTargetAtTime(660 + intensity * 40, t, 0.15);
-  } catch (_) {}
-};
-
-const stopMorseTone = () => {
-  if (!_morseAudioCtx || !_morseOsc || !_morseGain) return;
-  try {
-    const t = _morseAudioCtx.currentTime;
-    _morseGain.gain.cancelScheduledValues(t);
-    _morseGain.gain.setValueAtTime(_morseGain.gain.value, t);
-    // exp 衰减尾音，听感更自然
-    _morseGain.gain.exponentialRampToValueAtTime(0.0008, t + 0.06);
-    _morseOsc.stop(t + 0.08);
-    _morseExtras.forEach(n => { try { n.stop(t + 0.08); } catch (_) {} });
-  } catch (_) {}
-  _morseOsc = null;
-  _morseGain = null;
-  _morseExtras = [];
-};
-
 /** 答对三音上扬和弦（A5 → D6 → G6） */
 const playSuccessChime = () => {
-  const ctx = _ensureAudio();
+  const ctx = getMorseAudioContext();
   if (!ctx) return;
   try {
     if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
@@ -188,7 +68,7 @@ const playSuccessChime = () => {
 
 /** 答错下坠低鸣 */
 const playWrongBuzz = () => {
-  const ctx = _ensureAudio();
+  const ctx = getMorseAudioContext();
   if (!ctx) return;
   try {
     if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
@@ -209,7 +89,7 @@ const playWrongBuzz = () => {
 
 /** 成就达成短促金铃铛（连击阈值） */
 const playAchievementBell = () => {
-  const ctx = _ensureAudio();
+  const ctx = getMorseAudioContext();
   if (!ctx) return;
   try {
     if (ctx.state === 'suspended') { try { ctx.resume(); } catch (_) {} }
@@ -245,40 +125,49 @@ const triggerRipple = (e) => {
 };
 
 const App = () => {
-  const [activeTab, setActiveTab] = useState('learn');
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const t = new URLSearchParams(window.location.search).get('tab');
+      if (t === 'learn') return 'play';   // 「摩斯」并入信使的字母教学
+      if (t && TABS.some(tab => tab.id === t)) return t;
+    } catch (_) {}
+    return 'music';
+  });
+  // 字母教学：从信使 ⋯ 菜单打开的全屏浮层（整合原「摩斯」标签页）
+  const [learnOpen, setLearnOpen] = useState(false);
 
   return (
     <div className="app-page w-full selection:bg-[var(--gold-300)]/25" style={{ color: 'var(--text)' }}>
       <div className="phone-shell">
         <div className="phone-screen">
-          <div className="phone-status-bar" aria-hidden>
-            <div className="phone-punch" />
-          </div>
-
           <div className="phone-content">
-            {/* Tab bar */}
-            <div className="relative z-50 px-5 pt-1 pb-2 flex-shrink-0">
+            {/* Tab bar — 顶栏贴顶，无装饰摄像头；真机用 safe-area */}
+            <div
+              className="relative z-50 px-5 pb-2 flex-shrink-0 pt-[max(6px,env(safe-area-inset-top,0px))]"
+            >
               <div
                 className="glass-chip flex items-center p-1"
                 role="tablist"
                 aria-label="主导航"
               >
-                {TABS.map(({ id, label, icon: Icon }) => {
+                {TABS.map(({ id, label, icon: Icon, grow = 1 }) => {
                   const active = activeTab === id;
                   return (
-                    <button
+                  <button
                       key={id}
-                      type="button"
+                    type="button"
                       role="tab"
                       aria-selected={active}
                       aria-controls={`panel-${id}`}
                       onClick={(e) => {
                         if (!active) { haptic(6); triggerRipple(e); }
+                        setLearnOpen(false);   // 切标签时关掉字母教学浮层，避免它盖住新标签内容
                         setActiveTab(id);
                       }}
-                      className="ripple relative flex-1 h-9 rounded-full text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-300 ease-out"
-                      style={{
-                        margin: '2px',
+                      className="ripple relative h-9 rounded-full text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-300 ease-out"
+                    style={{
+                      margin: '2px',
+                      flex: `${grow} 1 0%`,
                         ...(active
                           ? {
                               background: 'linear-gradient(135deg, #f2d27a 0%, #d4a747 100%)',
@@ -286,14 +175,14 @@ const App = () => {
                               boxShadow: '0 6px 18px rgba(217, 201, 163, 0.35), inset 0 1px 0 rgba(255,255,255,0.35)',
                             }
                           : {
-                              background: 'transparent',
+                            background: 'transparent',
                               color: 'var(--accent-soft)',
-                            }),
-                      }}
-                    >
+                          }),
+                    }}
+                  >
                       <Icon className="w-3.5 h-3.5" strokeWidth={active ? 2.4 : 2} />
                       <span className="tracking-wide">{label}</span>
-                    </button>
+                  </button>
                   );
                 })}
               </div>
@@ -303,13 +192,6 @@ const App = () => {
                 这样用户在 Music 生成音乐中途切到 Learn/Play 查看，再回来仍保留全部状态（表单、生成结果、播放进度等）。
                 display:none 比 visibility:hidden 更干净：彻底不参与布局/渲染，避免切换时上一个 tab 的内容"残影"漏出到新 tab。 */}
             <div className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
-              <div
-                className={`absolute inset-0 flex-col ${activeTab === 'learn' ? 'tab-enter' : ''}`}
-                style={{ display: activeTab === 'learn' ? 'flex' : 'none' }}
-                aria-hidden={activeTab !== 'learn'}
-              >
-                <LearnScreen isActive={activeTab === 'learn'} />
-              </div>
               <div
                 className={`absolute inset-0 flex-col ${activeTab === 'music' ? 'tab-enter' : ''}`}
                 style={{ display: activeTab === 'music' ? 'flex' : 'none' }}
@@ -322,8 +204,40 @@ const App = () => {
                 style={{ display: activeTab === 'play' ? 'flex' : 'none' }}
                 aria-hidden={activeTab !== 'play'}
               >
-                <PlayScreen isActive={activeTab === 'play'} />
+                {/* 第三个 Tab 由「猜码」切换为「跳一跳」小游戏（PlayScreen 代码保留以便回滚） */}
+                <JumpGame isActive={activeTab === 'play'} onOpenLearn={() => setLearnOpen(true)} />
               </div>
+
+              {/* 字母教学浮层：整合原「摩斯」标签页，从信使 ⋯ 菜单进入 */}
+              {learnOpen ? (
+                <div
+                  className="absolute inset-0 z-[70] flex flex-col learn-overlay-enter"
+                  style={{ background: 'var(--bg, #0b0a12)' }}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="字母教学"
+                >
+                  <div className="flex items-center justify-between px-5 pt-2 pb-1 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => { haptic(6); setLearnOpen(false); }}
+                      className="btn-tactile flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[13px]"
+                      style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}
+                      aria-label="返回信使"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span>返回信使</span>
+                    </button>
+                    <span className="text-[12px] tracking-wide" style={{ color: 'var(--text-faint)' }}>
+                      字母教学
+                    </span>
+                    <span className="w-[76px]" aria-hidden="true" />
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <LearnScreen isActive={learnOpen} />
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -339,15 +253,22 @@ const LearnScreen = ({ isActive = true }) => {
   const [mode, setMode] = useState('learn');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isVideoLoaded, setIsVideoLoaded] = useState(false);
   // 播放模式：sequence（顺序 A→Z）或 loop（当前字母循环）
   const [playMode, setPlayMode] = useState('sequence');
   const playModeRef = useRef('sequence');
   useEffect(() => { playModeRef.current = playMode; }, [playMode]);
-  // 视频声音开关（默认开启；若浏览器阻止带声自动播放，用户点 ▶ 即可正常带声播放）
+
+  // 切换字母时清空练习输入（顺序播放等路径不会走 goTo）
+  useEffect(() => {
+    setTestInput([]);
+    setCelebration(null);
+    clearTimeout(celebrationTimerRef.current);
+  }, [currentIndex]);
+  // 动画声音开关
   const [soundOn, setSoundOn] = useState(true);
-  const videoRef = useRef(null);
+  const animRef = useRef(null);
   const autoPlayTimerRef = useRef(null);
+  const userPlaySessionRef = useRef(false);
 
   const [celebration, setCelebration] = useState(null);
   const celebrationTimerRef = useRef(null);
@@ -381,8 +302,8 @@ const LearnScreen = ({ isActive = true }) => {
   const morseCode = MORSE_MAP[currentLetter];
 
   useEffect(() => () => {
-    clearTimeout(autoPlayTimerRef.current);
-    clearTimeout(celebrationTimerRef.current);
+      clearTimeout(autoPlayTimerRef.current);
+      clearTimeout(celebrationTimerRef.current);
     clearTimeout(achievementTimerRef.current);
     clearInterval(intensityTimerRef.current);
   }, []);
@@ -391,20 +312,18 @@ const LearnScreen = ({ isActive = true }) => {
     if (mode !== 'learn') clearTimeout(autoPlayTimerRef.current);
   }, [mode]);
 
-  // 离开 learn 模式时暂停视频 —— 切字母/切模式的重新加载交给 <video key={...}> 自动重建
+  // 离开 learn 模式时暂停动画
   useEffect(() => {
     if (mode === 'learn') return;
     clearTimeout(autoPlayTimerRef.current);
-    const v = videoRef.current;
-    if (v) { try { v.pause(); } catch (_) {} }
+    animRef.current?.pause();
     setIsPlaying(false);
   }, [mode]);
 
-  // Learn tab 本身被隐藏（切去 Music/Play）时，暂停视频并释放按键音；回来时不自动复播（交给用户点击）
+  // Learn tab 本身被隐藏（切去 Music/Play）时，暂停动画并释放按键音
   useEffect(() => {
     if (isActive) return;
-    const v = videoRef.current;
-    if (v && !v.paused) { try { v.pause(); } catch (_) {} setIsPlaying(false); }
+    animRef.current?.pause();
     clearTimeout(autoPlayTimerRef.current);
     // 若正好在按着发报，松开模拟以避免后台持续发声
     if (pressStartRef.current) {
@@ -421,45 +340,55 @@ const LearnScreen = ({ isActive = true }) => {
     if (idx < 0) idx = ALPHABET.length - 1;
     if (idx >= ALPHABET.length) idx = 0;
     clearTimeout(autoPlayTimerRef.current);
+    userPlaySessionRef.current = false;
     haptic(6);
     setCurrentIndex(idx);
     setIsPlaying(false);
-    setIsVideoLoaded(false);
     setTestInput([]);
     setTestResult(null);
     setCelebration(null);
-    if (videoRef.current) {
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-    }
   };
 
-  const handleVideoEnded = () => {
+  // 顺序播放：用户主动点播放后，切到下一字母时自动续播
+  const sequenceAdvanceRef = useRef(false);
+  useEffect(() => {
+    if (!sequenceAdvanceRef.current || !userPlaySessionRef.current) return;
+    sequenceAdvanceRef.current = false;
+    const t = setTimeout(() => {
+      animRef.current?.restart();
+      setIsPlaying(true);
+    }, 80);
+    return () => clearTimeout(t);
+  }, [currentIndex]);
+
+  const handleAnimEnded = () => {
     clearTimeout(autoPlayTimerRef.current);
     setIsPlaying(false);
+    if (!userPlaySessionRef.current) return;
     autoPlayTimerRef.current = setTimeout(() => {
-      setTestInput([]);
-      setTestResult(null);
-      setCelebration(null);
       if (playModeRef.current === 'loop') {
-        // 单字循环：重置并重播当前字母
-        const v = videoRef.current;
-        if (v) {
-          try { v.currentTime = 0; v.play().then(() => setIsPlaying(true)).catch(() => {}); } catch (_) {}
-        }
-      } else {
+        animRef.current?.restart();
+        setIsPlaying(true);
+      } else if (playModeRef.current === 'sequence') {
+        sequenceAdvanceRef.current = true;
         setCurrentIndex((prev) => (prev + 1) % ALPHABET.length);
       }
-    }, 3000);
+    }, 2200);
   };
 
   const togglePlay = () => {
-    if (!videoRef.current) return;
     clearTimeout(autoPlayTimerRef.current);
     haptic(6);
-    if (isPlaying) videoRef.current.pause();
-    else videoRef.current.play();
-    setIsPlaying(!isPlaying);
+    if (isPlaying) {
+      userPlaySessionRef.current = false;
+      animRef.current?.pause();
+      animRef.current?.showStatic?.();
+      setIsPlaying(false);
+    } else {
+      userPlaySessionRef.current = true;
+      animRef.current?.restart();
+      setIsPlaying(true);
+    }
   };
 
   const startTest = () => {
@@ -554,17 +483,27 @@ const LearnScreen = ({ isActive = true }) => {
       }
     } else {
       const targetArr = morseCode.split('').map(c => c === '.' ? 'dot' : 'dash');
+      if (testInput.length >= targetArr.length) return;
+
       const newInput = [...testInput, type];
       setTestInput(newInput);
-      if (newInput.length === targetArr.length) {
-        const isCorrect = newInput.every((v, i) => v === targetArr[i]);
-        if (isCorrect) {
-          const pick = CELEBRATION_SLOGANS[Math.floor(Math.random() * CELEBRATION_SLOGANS.length)];
-          setCelebration({ ...pick, id: Date.now() });
-          haptic([14, 40, 14]);
-          clearTimeout(celebrationTimerRef.current);
-          celebrationTimerRef.current = setTimeout(() => setCelebration(null), 2200);
-        }
+      if (newInput.length < targetArr.length) return;
+
+      const isCorrect = newInput.every((v, i) => v === targetArr[i]);
+      if (isCorrect) {
+        const pick = CELEBRATION_SLOGANS[Math.floor(Math.random() * CELEBRATION_SLOGANS.length)];
+        setCelebration({ ...pick, id: Date.now() });
+        haptic([14, 40, 14]);
+        clearTimeout(celebrationTimerRef.current);
+        celebrationTimerRef.current = setTimeout(() => {
+          setCelebration(null);
+          setTestInput([]);
+        }, 2200);
+      } else {
+        haptic([30, 50, 30]);
+        playWrongBuzz();
+        clearTimeout(celebrationTimerRef.current);
+        celebrationTimerRef.current = setTimeout(() => setTestInput([]), 900);
       }
     }
   }, [mode, testLetter, testInput, morseCode, testStreak, testQuestionStartTime]);
@@ -579,6 +518,49 @@ const LearnScreen = ({ isActive = true }) => {
   const glowOpacity = isPressing ? (0.2 + pressIntensity * 0.8) : 0;
   const glowSize = isPressing ? (120 + pressIntensity * 60) : 0;
   const glowBlur = isPressing ? (30 + pressIntensity * 25) : 0;
+
+  const renderLearnSlots = () => {
+    const targets = morseCode.split('').map(c => c === '.' ? 'dot' : 'dash');
+    return (
+      <div className="flex items-center justify-center gap-2 flex-wrap">
+        {targets.map((target, i) => {
+          const inputed = testInput[i];
+          const isNext = i === testInput.length;
+          const dotSize = 12;
+          const dashW = 32;
+          const h = 12;
+          let bg = 'transparent';
+          let border = '1px dashed rgba(201,162,74,0.28)';
+          let shadow = 'none';
+          if (inputed) {
+            const match = inputed === target;
+            bg = match
+              ? (inputed === 'dot' ? 'var(--gold-100)' : 'linear-gradient(90deg, var(--gold-600), var(--gold-100))')
+              : '#fca5a5';
+            border = match ? 'none' : '1px solid #f87171';
+            shadow = match ? '0 0 10px rgba(242,210,122,0.55)' : '0 0 8px rgba(248,113,113,0.5)';
+          } else if (isNext) {
+            border = '1px solid rgba(242,210,122,0.45)';
+            shadow = '0 0 8px rgba(242,210,122,0.25)';
+          }
+          return (
+            <div
+              key={i}
+              className="rounded-full transition-all duration-150"
+              style={{
+                width: target === 'dot' ? dotSize : dashW,
+                height: h,
+                background: inputed ? bg : 'transparent',
+                border,
+                boxShadow: shadow,
+                opacity: inputed || isNext ? 1 : 0.45,
+              }}
+            />
+          );
+        })}
+      </div>
+    );
+  };
 
   const renderSignals = (signals, size = 'normal') => {
     const dotSize = size === 'large' ? 14 : 10;
@@ -615,35 +597,40 @@ const LearnScreen = ({ isActive = true }) => {
     <div id="panel-learn" role="tabpanel" className="flex flex-col h-full px-5 fade-up-in">
 
       {/* Header row */}
-      <div className="flex items-center justify-between mt-2 mb-3 flex-shrink-0">
-        <span className="text-2xl font-mono" style={{ color: 'var(--text-muted)' }}>
-          {mode === 'test' ? (
-            <span className="flex items-center gap-2">
-              <span className="text-lg">{testScore}<span className="opacity-40">/</span>{testTotal}</span>
-              {testStreak >= 2 && (
-                <span
-                  className="text-[11px] px-2 py-0.5 rounded-full font-sans font-bold flex items-center gap-1"
-                  style={{
-                    background: 'linear-gradient(135deg, rgba(255,120,60,0.25), rgba(242,210,122,0.3))',
-                    color: '#FFD88A',
-                    border: '1px solid rgba(255,150,70,0.5)',
-                    boxShadow: '0 0 10px rgba(255,140,80,0.35)',
-                  }}
-                >
-                  <Flame className="w-3 h-3" strokeWidth={2.6} /> ×{testStreak}
-                </span>
-              )}
-              <span className="text-lg font-semibold" style={{ color: 'var(--gold-100)' }}>{testTotalScore}</span>
-              <span className="text-[10px] font-sans tracking-[0.12em]" style={{ color: 'var(--gold-400)' }}>PTS</span>
+      <div className={`flex items-center flex-shrink-0 mt-2 mb-3 ${mode === 'test' ? 'grid grid-cols-[1fr_auto_1fr] gap-2' : 'justify-between'}`}>
+        {mode === 'test' ? (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="inline-flex items-center gap-1.5 text-[13px] tabular-nums whitespace-nowrap">
+              <span style={{ color: 'var(--text)' }} className="font-semibold">{testScore}</span>
+              <span className="opacity-35">/</span>
+              <span style={{ color: 'var(--text-muted)' }}>{testTotal}</span>
             </span>
-          ) : (
+            <span className="w-px h-3 self-center opacity-30" style={{ background: 'var(--gold-300)' }} aria-hidden="true" />
+            <span className="text-[13px] font-semibold tabular-nums whitespace-nowrap" style={{ color: 'var(--gold-100)' }}>
+              {testTotalScore}<span className="text-[10px] font-normal ml-0.5 opacity-75">分</span>
+            </span>
+            {testStreak >= 2 && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded-full font-bold flex items-center gap-0.5"
+                style={{
+                  background: 'linear-gradient(135deg, rgba(255,120,60,0.25), rgba(242,210,122,0.3))',
+                  color: '#FFD88A',
+                  border: '1px solid rgba(255,150,70,0.5)',
+                }}
+              >
+                <Flame className="w-3 h-3" strokeWidth={2.6} />×{testStreak}
+              </span>
+            )}
+          </div>
+        ) : (
+        <span className="text-2xl font-mono" style={{ color: 'var(--text-muted)' }}>
             <span>{currentIndex + 1} <span className="opacity-50">/</span> 26</span>
-          )}
         </span>
+        )}
 
         {/* Mode switch */}
         <div
-          className="flex items-center p-1 rounded-full"
+          className="flex items-center p-1 rounded-full justify-self-center"
           style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)' }}
           role="tablist"
           aria-label="模式"
@@ -654,7 +641,7 @@ const LearnScreen = ({ isActive = true }) => {
           ].map(m => {
             const active = mode === m.id;
             return (
-              <button
+            <button
                 key={m.id}
                 role="tab"
                 aria-selected={active}
@@ -670,7 +657,7 @@ const LearnScreen = ({ isActive = true }) => {
                   : { background: 'transparent', color: 'var(--text-muted)' }}
               >
                 {m.label}
-              </button>
+            </button>
             );
           })}
         </div>
@@ -699,7 +686,7 @@ const LearnScreen = ({ isActive = true }) => {
           <button
             type="button"
             onClick={testLetter ? resetInput : startTest}
-            className="btn-ghost btn-tactile px-3 h-7 text-xs font-medium"
+            className="btn-ghost btn-tactile px-3 h-7 text-xs font-medium justify-self-end"
           >
             {testLetter ? '重置' : '开始'}
           </button>
@@ -709,73 +696,22 @@ const LearnScreen = ({ isActive = true }) => {
       {/* ========== Learn mode ========== */}
       {mode === 'learn' && (
         <>
-          {/* Video player */}
+          {/* 摩斯字母动画（纯代码，替代 letter/*.mp4） */}
           <div
             className="w-full rounded-2xl overflow-hidden relative flex-shrink-0"
             style={{ height: '27vh', background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)' }}
           >
-            <video
+            <MorseLetterAnim
               key={currentLetter}
-              ref={videoRef}
-              src={`/letter/${currentLetter}.mp4`}
-              className="w-full h-full"
-              playsInline
-              muted={!soundOn}
-              autoPlay
-              preload="auto"
-              style={{ objectFit: 'contain', background: 'var(--surface-sunken)' }}
-              onLoadedMetadata={() => setIsVideoLoaded(true)}
-              onLoadedData={() => setIsVideoLoaded(true)}
-              onCanPlay={(e) => {
-                setIsVideoLoaded(true);
-                // 若期望带声播放但首次没有用户手势被浏览器拦截 → 自动降级为静音继续播，
-                // 并把 UI 的喇叭状态切回静音，用户点喇叭即可解锁带声。
-                const v = e.currentTarget;
-                if (soundOn && v.paused) {
-                  const p = v.play();
-                  if (p && typeof p.catch === 'function') {
-                    p.catch(() => {
-                      try {
-                        v.muted = true;
-                        setSoundOn(false);
-                        v.play().catch(() => {});
-                      } catch (_) {}
-                    });
-                  }
-                }
-              }}
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
-              onEnded={handleVideoEnded}
-              onError={() => setIsVideoLoaded(false)}
-              aria-label={`字母 ${currentLetter} 的摩斯教学视频`}
+              ref={animRef}
+              letter={currentLetter}
+              soundOn={soundOn}
+              onPlayingChange={setIsPlaying}
+              onEnded={handleAnimEnded}
             />
-            {!isVideoLoaded && (
-              <div
-                className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none"
-                style={{ background: 'var(--surface-sunken)' }}
-              >
-                <div
-                  className="text-6xl font-light text-gold-grad"
-                  style={{
-                    fontFamily: 'var(--font-display)',
-                    filter: 'drop-shadow(0 0 20px rgba(242,210,122,0.3))',
-                    opacity: 0.6,
-                  }}
-                >
-                  {currentLetter}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--gold-300)', animation: 'dotPulse 1.2s ease-in-out infinite', animationDelay: '0ms' }} />
-                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--gold-300)', animation: 'dotPulse 1.2s ease-in-out infinite', animationDelay: '180ms' }} />
-                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--gold-300)', animation: 'dotPulse 1.2s ease-in-out infinite', animationDelay: '360ms' }} />
-                </div>
-                <style>{`@keyframes dotPulse { 0%,100% { opacity: 0.2; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.15); } }`}</style>
-              </div>
-            )}
             {/* corner chip */}
-            <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-chip">
-              <span className="live-dot" />
+            <div className="absolute top-3 left-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-chip pointer-events-none">
+              {!isPlaying ? <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--text-faint)' }} /> : <span className="live-dot" />}
               <span className="text-[10px] tracking-[0.2em] uppercase" style={{ color: 'var(--gold-100)' }}>Morse</span>
             </div>
           </div>
@@ -794,20 +730,9 @@ const LearnScreen = ({ isActive = true }) => {
             <div className="flex items-center gap-2 flex-shrink-0">
               <button
                 type="button"
-                aria-label={soundOn ? '关闭视频声音' : '开启视频声音'}
+                aria-label={soundOn ? '关闭动画声音' : '开启动画声音'}
                 aria-pressed={soundOn}
-                onClick={() => {
-                  haptic(4);
-                  const next = !soundOn;
-                  setSoundOn(next);
-                  const v = videoRef.current;
-                  if (v) {
-                    try {
-                      v.muted = !next;
-                      if (next && v.paused) { v.play().catch(() => {}); }
-                    } catch (_) {}
-                  }
-                }}
+                onClick={() => { haptic(4); setSoundOn(v => !v); }}
                 className="btn-icon btn-tactile w-9 h-9"
                 style={soundOn ? { color: 'var(--gold-100)', borderColor: 'rgba(201,162,74,0.4)' } : undefined}
               >
@@ -815,7 +740,7 @@ const LearnScreen = ({ isActive = true }) => {
               </button>
               <button
                 type="button"
-                aria-label={isPlaying ? '暂停' : '播放'}
+                aria-label={isPlaying ? '暂停' : '从头播放'}
                 onClick={togglePlay}
                 className="btn-primary btn-tactile w-10 h-10 rounded-full flex items-center justify-center"
               >
@@ -862,40 +787,39 @@ const LearnScreen = ({ isActive = true }) => {
               </div>
             )}
 
-            <div className="text-center">
+            <div className="text-center w-full px-2">
               <div
-                className="min-h-[36px] flex items-center justify-center transition-opacity duration-200"
+                className="min-h-[40px] flex flex-col items-center justify-center gap-2 transition-opacity duration-200"
                 style={{ opacity: celebration ? 0 : 1 }}
                 aria-hidden={!!celebration}
               >
-                {testInput.length > 0 && !celebration && (
-                  <div className="flex items-center justify-center gap-3 fade-up-in">
-                    {renderSignals(testInput, 'large')}
+                {(testInput.length > 0 || isPressing) && !celebration ? (
+                  <div className="flex items-center justify-center gap-3 fade-up-in w-full">
+                    {renderLearnSlots()}
                     <button
                       type="button"
-                      aria-label="清空全部信号"
-                      title="清空全部"
+                      aria-label="清空练习输入"
+                      title="清空"
                       onClick={() => { haptic(10); setTestInput([]); setCelebration(null); }}
-                      className="btn-tactile w-8 h-8 rounded-full flex items-center justify-center transition-all"
+                      className="btn-tactile w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
                       style={{
                         background: 'rgba(201,162,74,0.08)',
                         border: '1px solid rgba(201,162,74,0.32)',
                         color: 'var(--gold-100)',
-                        backdropFilter: 'blur(6px)',
-                        WebkitBackdropFilter: 'blur(6px)',
-                      }}
-                      onMouseEnter={e => {
-                        e.currentTarget.style.background = 'rgba(201,162,74,0.18)';
-                        e.currentTarget.style.borderColor = 'rgba(242,210,122,0.55)';
-                      }}
-                      onMouseLeave={e => {
-                        e.currentTarget.style.background = 'rgba(201,162,74,0.08)';
-                        e.currentTarget.style.borderColor = 'rgba(201,162,74,0.32)';
                       }}
                     >
                       <X className="w-3.5 h-3.5" strokeWidth={2.4} />
                     </button>
                   </div>
+                ) : (
+                  renderLearnSlots()
+                )}
+                {!celebration && (
+                  <p className="text-[10px] tracking-wide" style={{ color: 'var(--text-faint)' }}>
+                    {testInput.length > 0
+                      ? `已敲 ${testInput.length} / ${morseCode.length}`
+                      : `跟读敲出 ${morseCode.length} 个符号`}
+                  </p>
                 )}
               </div>
             </div>
@@ -913,6 +837,22 @@ const LearnScreen = ({ isActive = true }) => {
               Icon={MorseSymbol}
               idleBreathe
             />
+
+            {/* 电键操作提示 —— 未开始输入时轻柔呼吸引导 */}
+            <div
+              className="flex items-center gap-4 text-[11px] transition-opacity duration-300"
+              style={{ color: 'var(--text-faint)', opacity: (testInput.length > 0 || celebration || isPressing) ? 0 : 1 }}
+              aria-hidden="true"
+            >
+              <span className="flex items-center gap-1.5 hint-breath">
+                <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--gold-100)', boxShadow: '0 0 6px var(--gold-100)' }} />
+                短按 · 点
+              </span>
+              <span className="flex items-center gap-1.5 hint-breath" style={{ animationDelay: '0.5s' }}>
+                <span className="inline-block w-5 h-1.5 rounded-full" style={{ background: 'linear-gradient(90deg, var(--gold-600), var(--gold-100))' }} />
+                长按 · 划
+              </span>
+            </div>
           </div>
 
           {/* 播放模式选择条 —— 仿音乐播放器 */}
@@ -930,7 +870,7 @@ const LearnScreen = ({ isActive = true }) => {
                 const active = playMode === opt.id;
                 const Icon = opt.Icon;
                 return (
-                  <button
+              <button
                     key={opt.id}
                     type="button"
                     role="radio"
@@ -949,7 +889,7 @@ const LearnScreen = ({ isActive = true }) => {
                   >
                     <Icon className="w-[15px] h-[15px]" strokeWidth={active ? 2.6 : 2} />
                     {opt.label}
-                  </button>
+              </button>
                 );
               })}
             </div>
@@ -1027,16 +967,16 @@ const LearnScreen = ({ isActive = true }) => {
                 </div>
               </div>
               <div>
-                <h3 className="text-xl font-semibold mb-1" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)', letterSpacing: '0.05em' }}>
+                <h3 className="text-[22px] font-semibold mb-1.5" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
                   摩斯挑战赛
                 </h3>
-                <p className="text-[11.5px] tracking-[0.22em] uppercase" style={{ color: 'var(--text-muted)' }}>
+                <p className="text-[12px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
                   看字母 · 敲摩斯 · 拼速度与准度
                 </p>
               </div>
               {testBestStreak > 0 && (
                 <div
-                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] tracking-[0.18em] uppercase"
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px]"
                   style={{ background: 'rgba(201,162,74,0.1)', border: '1px solid rgba(201,162,74,0.3)', color: 'var(--gold-100)' }}
                 >
                   <Sparkles className="w-3.5 h-3.5" strokeWidth={2.4} />
@@ -1046,7 +986,7 @@ const LearnScreen = ({ isActive = true }) => {
               <button
                 type="button"
                 onClick={startTest}
-                className="btn-primary btn-tactile ripple px-8 h-12 rounded-full text-[14px] tracking-[0.24em] uppercase flex items-center gap-2"
+                className="btn-primary btn-tactile ripple px-8 h-11 rounded-full text-[13px] font-semibold flex items-center gap-2"
                 onMouseDown={triggerRipple}
               >
                 <Zap className="w-4 h-4" strokeWidth={2.4} />
@@ -1073,26 +1013,28 @@ const LearnScreen = ({ isActive = true }) => {
           <>
           <div
             key={`qcard-${shakeTick}-${testLetter}`}
-            className="flex-shrink-0 mt-1 relative rounded-3xl"
+            className="flex-shrink-0 relative rounded-3xl px-4 py-4"
             style={{
+              background: 'var(--surface-sunken)',
+              border: '1px solid var(--border-subtle)',
               animation: shakeTick > 0 && testResult === 'wrong'
                 ? 'testShake 0.55s cubic-bezier(.36,.07,.19,.97), testRedFlash 0.7s ease-out'
                 : undefined,
             }}
           >
-            <div className="flex flex-col items-center relative">
-              <p className="text-[11px] tracking-[0.24em] uppercase font-medium mb-2" style={{ color: 'var(--gold-400)' }}>
-                敲出这个字母的摩斯
+            <div className="flex flex-col items-center relative gap-3">
+              <p className="text-[12px] tracking-[0.14em] font-medium" style={{ color: 'var(--gold-400)' }}>
+                敲出这个字母
               </p>
 
               {/* 大字母 + 浮字 */}
-              <div className="relative mb-3">
+              <div className="relative">
                 <div
-                  className="text-[100px] leading-none font-extralight text-gold-grad"
+                  className="text-[68px] leading-none font-light text-gold-grad"
                   style={{
                     fontFamily: 'var(--font-display)',
-                    filter: 'drop-shadow(0 0 30px rgba(242,210,122,0.45))',
-                    transform: testResult === 'correct' ? 'scale(1.06)' : 'scale(1)',
+                    filter: 'drop-shadow(0 0 24px rgba(242,210,122,0.4))',
+                    transform: testResult === 'correct' ? 'scale(1.05)' : 'scale(1)',
                     transition: 'transform 0.35s cubic-bezier(0.34,1.56,0.64,1)',
                   }}
                 >
@@ -1117,9 +1059,8 @@ const LearnScreen = ({ isActive = true }) => {
                 )}
               </div>
 
-              {/* Morse 填空遮罩 —— 未输入位全部统一的小圆占位，不泄露答案；
-                  用户敲出后才按"自己输入的"形状显示（对：金色；错：红色）。 */}
-              <div className="flex items-center justify-center gap-2 mb-3 min-h-[22px]">
+              {/* Morse 填空 */}
+              <div className="flex items-center justify-center gap-2.5 min-h-[24px]">
                 {targetArr.map((ch, i) => {
                   const inputed = testInput[i]; // 'dot' | 'dash' | undefined
                   const targetType = ch === '.' ? 'dot' : 'dash';
@@ -1173,18 +1114,18 @@ const LearnScreen = ({ isActive = true }) => {
                 })}
               </div>
 
-              {/* 结果 banner + 连击 / 速度 */}
-              <div className="min-h-[34px] flex items-center justify-center gap-3">
+              {/* 结果反馈 */}
+              <div className="min-h-[40px] flex items-center justify-center w-full">
                 {testResult === 'correct' && testSpeedScore !== null && (
                   <div className="flex items-center gap-2.5 fade-up-in">
                     <div className="flex items-center gap-0.5">
                       {[1, 2, 3].map(s => (
-                        <span key={s} className="text-base" style={{ color: s <= getStars() ? 'var(--gold-100)' : 'rgba(201,162,74,0.2)' }}>★</span>
+                        <span key={s} className="text-lg" style={{ color: s <= getStars() ? 'var(--gold-100)' : 'rgba(201,162,74,0.2)' }}>★</span>
                       ))}
                     </div>
                     {testStreak > 1 && (
                       <span
-                        className="text-[11px] px-2 py-0.5 rounded-full font-semibold tracking-[0.12em]"
+                        className="text-[11px] px-2 py-0.5 rounded-full font-semibold"
                         style={{ background: 'linear-gradient(135deg, rgba(122,91,31,0.5), rgba(201,162,74,0.42))', color: 'var(--gold-100)', border: '1px solid rgba(242,210,122,0.5)' }}
                       >
                         连击 ×{testStreak}
@@ -1194,11 +1135,22 @@ const LearnScreen = ({ isActive = true }) => {
                 )}
                 {testResult === 'wrong' && (
                   <div
-                    className="px-4 py-1.5 rounded-full text-[12px] font-semibold flex items-center gap-1.5 fade-up-in"
-                    style={{ background: 'rgba(255,107,107,0.12)', color: 'var(--error)', border: '1px solid rgba(255,107,107,0.35)' }}
+                    className="w-full max-w-[260px] px-3 py-2.5 rounded-2xl flex flex-col items-center gap-2 fade-up-in"
+                    style={{ background: 'rgba(255,107,107,0.08)', border: '1px solid rgba(255,107,107,0.22)' }}
                   >
-                    <X className="w-3.5 h-3.5" />
-                    正确答案 {MORSE_MAP[testLetter]}
+                    <div className="flex items-center gap-1.5">
+                      <X className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--error)' }} />
+                      <span className="text-[12px] font-medium" style={{ color: 'var(--text-muted)' }}>正确答案</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span
+                        className="text-2xl font-light leading-none"
+                        style={{ fontFamily: 'var(--font-display)', color: 'var(--gold-100)' }}
+                      >
+                        {testLetter}
+                      </span>
+                      {renderSignals(MORSE_MAP[testLetter].split('').map(c => c === '.' ? 'dot' : 'dash'))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1227,20 +1179,20 @@ const LearnScreen = ({ isActive = true }) => {
                 </div>
               )}
             </div>
-          </div>
+            </div>
 
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
-            <p className="text-[11px] tracking-[0.24em] uppercase font-medium" style={{ color: 'var(--text-faint)' }}>
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 min-h-0 py-2">
+            <p className="text-[12px] font-medium text-center px-4" style={{ color: testResult === 'wrong' ? 'var(--text-muted)' : 'var(--text-faint)' }}>
               {testInput.length > 0 && !testResult
-                ? `${testInput.length} / ${targetArr.length}`
+                ? `已输入 ${testInput.length} / ${targetArr.length}`
                 : testResult === null
-                  ? '按住按钮 · 输入信号'
-                  : testResult === 'correct' ? '漂亮！下一题' : '别灰心 · 再试一次'}
+                  ? '按住电键 · 输入摩斯信号'
+                  : testResult === 'correct' ? '漂亮！准备下一题' : '别灰心，再试一次'}
             </p>
 
             <MorseKey
-              size={128}
-              iconSize={48}
+              size={120}
+              iconSize={44}
               isPressing={isPressing}
               pressIntensity={pressIntensity}
               glowSize={glowSize}
@@ -1258,7 +1210,7 @@ const LearnScreen = ({ isActive = true }) => {
 
           {/* bottom actions — 仅在已进入挑战时显示 */}
           {testLetter && (
-            <div className="flex items-center justify-center gap-3 mb-4 flex-shrink-0">
+            <div className="flex items-center gap-2 mb-3 pt-1 flex-shrink-0 w-full">
               <button
                 type="button"
                 aria-label="删除最后一个信号"
@@ -1271,52 +1223,41 @@ const LearnScreen = ({ isActive = true }) => {
                   }
                 }}
                 disabled={testInput.length === 0 || testResult !== null}
-                className="btn-icon btn-tactile w-14 h-14 rounded-2xl flex flex-col items-center justify-center gap-0.5"
+                className="btn-icon btn-tactile w-11 h-11 rounded-xl flex-shrink-0"
                 style={{ opacity: (testInput.length === 0 || testResult !== null) ? 0.4 : 1 }}
               >
-                <Delete className="w-5 h-5" />
-                <span className="text-[10px] tracking-wider">删除</span>
+                <Delete className="w-[18px] h-[18px]" />
               </button>
 
-              {testResult === 'wrong' && (
+              <div className="flex flex-1 items-center gap-2 min-w-0">
+                {testResult === 'wrong' && (
+                  <button
+                    type="button"
+                    onClick={() => { haptic(6); setTestInput([]); setTestResult(null); setTestSpeedScore(null); setTestQuestionStartTime(Date.now()); }}
+                    className="btn-ghost btn-tactile flex-1 min-w-0 h-11 rounded-xl flex items-center justify-center gap-1.5 text-[13px] font-semibold whitespace-nowrap"
+                  >
+                    <Repeat className="w-4 h-4 flex-shrink-0" strokeWidth={2.4} />
+                    <span>再试一次</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
-                  onClick={() => { haptic(6); setTestInput([]); setTestResult(null); setTestSpeedScore(null); setTestQuestionStartTime(Date.now()); }}
-                  className="btn-tactile px-5 h-14 rounded-2xl flex items-center gap-2 font-semibold"
-                  style={{
-                    background: 'rgba(201,162,74,0.12)',
-                    border: '1px solid rgba(201,162,74,0.4)',
-                    color: 'var(--gold-100)',
-                    fontSize: 13,
-                  }}
+                  onClick={() => { haptic(8); startTest(); }}
+                  className="btn-primary btn-tactile ripple flex-1 min-w-0 h-11 rounded-xl flex items-center justify-center gap-1.5 text-[13px] font-semibold whitespace-nowrap"
+                  onMouseDown={triggerRipple}
+                  style={testResult !== 'wrong' ? { flex: 2 } : undefined}
                 >
-                  <Repeat className="w-4 h-4" strokeWidth={2.4} />
-                  再试一次
+                  <ArrowRight className="w-4 h-4 flex-shrink-0" strokeWidth={2.4} />
+                  <span>{testResult === null ? '跳过' : '下一题'}</span>
                 </button>
-              )}
-
-              <button
-                type="button"
-                onClick={() => { haptic(8); startTest(); }}
-                className="btn-primary btn-tactile ripple"
-                onMouseDown={triggerRipple}
-                style={{
-                  padding: '0 22px',
-                  height: 56,
-                  borderRadius: 18,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  gap: 6, fontWeight: 600, fontSize: 15,
-                }}
-              >
-                <ArrowRight className="w-4 h-4" strokeWidth={2.4} />
-                {testResult === null ? '跳过' : '下一题'}
-              </button>
+              </div>
 
               <button
                 type="button"
                 aria-label={testSeqMode === 'sequential' ? '切换为随机出题' : '切换为顺序出题'}
                 onClick={() => { haptic(6); setTestSeqMode(prev => prev === 'random' ? 'sequential' : 'random'); }}
-                className="btn-tactile w-14 h-14 rounded-2xl flex flex-col items-center justify-center gap-0.5 transition-all"
+                className="btn-icon btn-tactile w-11 h-11 rounded-xl flex-shrink-0 transition-all"
                 style={{
                   background: testSeqMode === 'sequential' ? 'rgba(201,162,74,0.12)' : 'var(--surface-sunken)',
                   border: `1px solid ${testSeqMode === 'sequential' ? 'rgba(201,162,74,0.4)' : 'var(--border-subtle)'}`,
@@ -1324,8 +1265,8 @@ const LearnScreen = ({ isActive = true }) => {
                 }}
               >
                 {testSeqMode === 'random'
-                  ? <><Shuffle className="w-4 h-4" /><span className="text-[10px] tracking-wider">随机</span></>
-                  : <><List className="w-4 h-4" /><span className="text-[10px] tracking-wider">顺序</span></>}
+                  ? <Shuffle className="w-[18px] h-[18px]" />
+                  : <List className="w-[18px] h-[18px]" />}
               </button>
             </div>
           )}
@@ -1349,62 +1290,135 @@ const MorseSymbol = ({ style, className }) => (
   </svg>
 );
 
-/* ===== 长按蓄力闪电环 —— 仅在 pressIntensity > 阈值时渲染 ===== */
+/* ===== 长按蓄力闪电环 —— Canvas 分形闪电，每隔数帧随机重绘 ===== */
+const fractalLightning = (x1, y1, x2, y2, roughness, depth) => {
+  if (depth === 0) return [[x1, y1], [x2, y2]];
+  const mx = (x1 + x2) / 2 + (Math.random() - 0.5) * roughness;
+  const my = (y1 + y2) / 2 + (Math.random() - 0.5) * roughness;
+  const left  = fractalLightning(x1, y1, mx, my, roughness * 0.58, depth - 1);
+  const right = fractalLightning(mx, my, x2, y2, roughness * 0.58, depth - 1);
+  return [...left.slice(0, -1), [mx, my], ...right.slice(1)];
+};
+
+const drawBolt = (ctx, pts, glowW, coreW, glowColor, coreColor) => {
+  // glow pass
+  ctx.save();
+  ctx.strokeStyle = glowColor;
+  ctx.lineWidth   = glowW;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.shadowColor = glowColor;
+  ctx.shadowBlur  = 14;
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+  ctx.stroke();
+  ctx.restore();
+  // bright core
+  ctx.save();
+  ctx.strokeStyle = coreColor;
+  ctx.lineWidth   = coreW;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.shadowColor = '#fff';
+  ctx.shadowBlur  = 3;
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+  ctx.stroke();
+  ctx.restore();
+};
+
 const LightningArc = ({ size, intensity }) => {
-  if (intensity <= 0) return null;
-  const bolts = [0, 60, 120, 180, 240, 300];
-  const cx = size;
-  const cy = size;
-  const innerR = size * 0.55;
-  const outerR = size * 0.55 + size * (0.18 + intensity * 0.22);
-  const visibleBolts = Math.max(2, Math.floor(2 + intensity * 6));
-  return (
-    <svg
-      width={size * 2}
-      height={size * 2}
-      className="absolute top-1/2 left-1/2 pointer-events-none"
-      style={{ transform: 'translate(-50%, -50%)', overflow: 'visible' }}
-      aria-hidden="true"
-    >
-      {bolts.slice(0, visibleBolts).map((deg, i) => {
-        const rad = (deg * Math.PI) / 180;
-        const startX = cx + Math.cos(rad) * innerR;
-        const startY = cy + Math.sin(rad) * innerR;
-        const endX = cx + Math.cos(rad) * outerR;
-        const endY = cy + Math.sin(rad) * outerR;
-        const normalX = -Math.sin(rad);
-        const normalY = Math.cos(rad);
-        const segs = 5;
-        const pts = [`M ${startX} ${startY}`];
-        for (let s = 1; s < segs; s++) {
-          const t = s / segs;
-          const bx = startX + (endX - startX) * t;
-          const by = startY + (endY - startY) * t;
-          // 用 deg + s 做确定性伪随机，避免每次 render 完全乱跳
-          const seed = Math.sin(deg * 17.3 + s * 41.7) * 43758.5453;
-          const jitter = (seed - Math.floor(seed) - 0.5) * size * 0.08;
-          pts.push(`L ${bx + normalX * jitter} ${by + normalY * jitter}`);
-        }
-        pts.push(`L ${endX} ${endY}`);
-        return (
-          <path
-            key={deg}
-            d={pts.join(' ')}
-            stroke="rgba(255,248,220,0.95)"
-            strokeWidth={1.6}
-            strokeLinecap="round"
-            fill="none"
-            style={{
-              filter: 'drop-shadow(0 0 6px rgba(242,210,122,1)) drop-shadow(0 0 14px rgba(242,210,122,0.6))',
-              // 刚触发就足够亮（0.15 阈值起 50%，0.55 即满），避免"刚出来几乎看不见"
-              opacity: Math.min(1, 0.5 + (intensity - 0.15) * 1.25),
-              animation: `lightningFlicker 0.12s steps(2) infinite`,
-              animationDelay: `${i * 0.025}s`,
-            }}
-          />
+  const canvasRef  = useRef(null);
+  const rafRef     = useRef(null);
+  const frameRef   = useRef(0);
+  const prevIntRef = useRef(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const W = size * 2, H = size * 2;
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width  = `${W}px`;
+    canvas.style.height = `${H}px`;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const cx = size, cy = size;
+    const innerR = size * 0.54;
+
+    const redraw = (intens) => {
+      ctx.clearRect(0, 0, W, H);
+      if (intens <= 0) return;
+
+      const numBolts  = Math.max(2, Math.round(2 + intens * 5));
+      const outerBase = innerR + size * (0.14 + intens * 0.30);
+      const roughness = size * 0.14 * intens;
+      const depth     = intens > 0.5 ? 5 : 4;
+
+      for (let b = 0; b < numBolts; b++) {
+        const baseAngle = (b / numBolts) * Math.PI * 2;
+        const angle   = baseAngle + (Math.random() - 0.5) * 0.35;
+        const outerR  = outerBase + (Math.random() - 0.5) * size * 0.12;
+
+        const x1 = cx + Math.cos(angle) * innerR;
+        const y1 = cy + Math.sin(angle) * innerR;
+        const x2 = cx + Math.cos(angle) * outerR;
+        const y2 = cy + Math.sin(angle) * outerR;
+
+        const alpha  = Math.min(1, 0.55 + (intens - 0.15) * 1.1);
+        const pts    = fractalLightning(x1, y1, x2, y2, roughness, depth);
+
+        drawBolt(ctx, pts,
+          3.8, 0.9,
+          `rgba(242,210,122,${alpha * 0.55})`,
+          `rgba(255,252,230,${alpha})`
         );
-      })}
-    </svg>
+
+        // 分叉支路（强度 > 0.35 时才出现）
+        if (intens > 0.35 && Math.random() > 0.35) {
+          const forkIdx = Math.floor(pts.length * 0.25 + Math.random() * pts.length * 0.45);
+          if (forkIdx < pts.length) {
+            const [fx, fy] = pts[forkIdx];
+            const fAngle  = angle + (Math.random() < 0.5 ? 1 : -1) * (0.4 + Math.random() * 0.6);
+            const fLen    = size * (0.10 + Math.random() * 0.13) * intens;
+            const fPts    = fractalLightning(fx, fy,
+              fx + Math.cos(fAngle) * fLen,
+              fy + Math.sin(fAngle) * fLen,
+              roughness * 0.45, depth - 2);
+            drawBolt(ctx, fPts,
+              1.8, 0.5,
+              `rgba(242,210,122,${alpha * 0.38})`,
+              `rgba(255,252,230,${alpha * 0.7})`
+            );
+          }
+        }
+      }
+    };
+
+    let skip = 0;
+    const loop = () => {
+      frameRef.current++;
+      // 每 3 帧重绘一次（约 20 fps），产生真实抖动感
+      if (frameRef.current % 3 === 0) redraw(prevIntRef.current);
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+
+    return () => { cancelAnimationFrame(rafRef.current); };
+  }, [size]);   // size 改变才重建；intensity 通过 ref 传入，不触发 effect
+
+  useEffect(() => { prevIntRef.current = intensity; }, [intensity]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden="true"
+      className="absolute top-1/2 left-1/2 pointer-events-none"
+      style={{ transform: 'translate(-50%, -50%)', display: intensity > 0 ? 'block' : 'none' }}
+    />
   );
 };
 
@@ -1422,10 +1436,6 @@ const MorseKey = ({ size, iconSize, isPressing, pressIntensity = 0, glowSize, gl
     <div className="flex justify-center relative">
       {/* 内联 keyframes —— 仅限按键内用到的几条动画 */}
       <style>{`
-        @keyframes lightningFlicker {
-          0%,100% { opacity: 1; }
-          50% { opacity: 0.28; }
-        }
         @keyframes chargeRing {
           0% { opacity: 0.7; transform: translate(-50%, -50%) scale(0.82); }
           100% { opacity: 0; transform: translate(-50%, -50%) scale(1.45); }
@@ -1589,9 +1599,21 @@ const MorseKey = ({ size, iconSize, isPressing, pressIntensity = 0, glowSize, gl
 /* =========================================================
    MusicScreen — 声印生成
    ========================================================= */
+const FALLBACK_STYLES = [
+  { id: 'healing',    label: '治愈'   },
+  { id: 'electronic', label: '电子'  },
+  { id: 'jazz',       label: '爵士'  },
+  { id: 'classical',  label: '古典'  },
+  { id: 'rock',       label: '摇滚'  },
+  { id: 'folk',       label: '民谣'  },
+  { id: 'cinematic',  label: '史诗'  },
+  { id: 'lofi',       label: 'Lo-Fi' },
+  { id: 'pop',        label: 'Pop'   },
+];
+
 const MusicScreen = ({ isActive = true }) => {
   const [word, setWord] = useState('');
-  const [styles, setStyles] = useState([]);
+  const [styles, setStyles] = useState(FALLBACK_STYLES);
   const [selectedStyle, setSelectedStyle] = useState('healing');
   const [withVocals, setWithVocals] = useState(false);
   const [stylePanelOpen, setStylePanelOpen] = useState(false);
@@ -1612,6 +1634,12 @@ const MusicScreen = ({ isActive = true }) => {
   const [morseSig, setMorseSig] = useState(null);
   // 当前 timeline 项的 per-letter effect；比整曲默认 dotEffect/dashEffect 优先
   const [curDotEff, setCurDotEff] = useState(null);
+  const [showSongMenu,   setShowSongMenu]   = useState(false);
+  const [showFavorites,  setShowFavorites]  = useState(false);
+  const [isDownloading,  setIsDownloading]  = useState(false);
+  const [savedTracks, setSavedTracks] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('morse-saved-tracks') || '[]'); } catch { return []; }
+  });
   const [curDashEff, setCurDashEff] = useState(null);
 
   const audioRef = useRef(null);
@@ -1621,8 +1649,8 @@ const MusicScreen = ({ isActive = true }) => {
   useEffect(() => {
     fetch(apiUrl('/api/styles'))
       .then(r => r.json())
-      .then(data => setStyles(data.styles || []))
-      .catch(() => {});
+      .then(data => { if (data.styles?.length) setStyles(data.styles); })
+      .catch(() => { /* 保留本地默认风格 */ });
   }, []);
 
   const startTicker = useCallback(() => {
@@ -1652,12 +1680,20 @@ const MusicScreen = ({ isActive = true }) => {
   const handleAudioTimeUpdate = () => {
     if (!audioRef.current || !result) return;
     const ms = audioRef.current.currentTime * 1000;
-    const im = result.intro_duration_ms || 0;
-    if (ms > im + 200) {
-      setIsPlaying(false);
-      stopTicker();
-    }
     if (timeline.length === 0) return;
+
+    const animDelayMs = result.intro_anim_delay_ms ?? (result.demo ? 6000 : 0);
+    if (animDelayMs > 0 && ms < animDelayMs) {
+      if (currentLetterIdx !== -1) setCurrentLetterIdx(-1);
+      if (currentMorse) {
+        setCurrentMorse('');
+        setMorseSig(null);
+        setCurDotEff(null);
+        setCurDashEff(null);
+      }
+      return;
+    }
+
     let idx = -1;
     for (let i = timeline.length - 1; i >= 0; i--) {
       if (ms >= timeline[i].start_ms) { idx = i; break; }
@@ -1695,15 +1731,32 @@ const MusicScreen = ({ isActive = true }) => {
   const handleAudioEnded = () => { setIsPlaying(false); stopTicker(); };
   const handleAudioLoaded = () => { if (audioRef.current) setDuration(audioRef.current.duration); };
 
-  const loadDemo = () => {
+  const loadDemo = async () => {
     if (isGenerating) return;
     haptic(6);
     setIsGenerating(true);
     setStatus('加载示例中'); setStatusKind('loading');
-    fetch(apiUrl('/api/demo'))
-      .then(r => r.json())
-      .then(data => { renderResult(data); setIsGenerating(false); setStatus(''); setStatusKind(''); })
-      .catch(() => { setStatus('示例加载失败'); setStatusKind('err'); setIsGenerating(false); });
+    try {
+      let data = null;
+      try {
+        const r = await fetch(apiUrl('/api/demo'));
+        if (r.ok) {
+          data = await r.json();
+        }
+      } catch (_) { /* 后端未启动时走静态兜底 */ }
+      if (!data?.audio_url) {
+        const r = await fetch('/data/mission-demo.json');
+        if (!r.ok) throw new Error('static');
+        data = await r.json();
+      }
+      if (!data?.audio_url) throw new Error('invalid');
+      renderResult(data);
+      setStatus(''); setStatusKind('');
+    } catch (_) {
+      setStatus('示例加载失败，请确认后端已启动'); setStatusKind('err');
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleGenerate = () => {
@@ -1763,14 +1816,22 @@ const MusicScreen = ({ isActive = true }) => {
       audioRef.current.load();
     }
     if (data.letter_timeline?.length && data.intro_duration_ms > 0) {
-      const first0 = data.letter_timeline[0];
-      const m0 = first0.morse_pretty || first0.morse || '';
-      const deff = first0.dot_effect || data.dot_effect || 'bloom';
-      const deff2 = first0.dash_effect || data.dash_effect || 'bloom';
-      setMorseSig('init:' + m0 + ':' + deff + ':' + deff2);
-      setCurrentMorse(m0);
-      setCurDotEff(deff);
-      setCurDashEff(deff2);
+      const animDelayMs = data.intro_anim_delay_ms ?? (data.demo ? 6000 : 0);
+      if (animDelayMs <= 0) {
+        const first0 = data.letter_timeline[0];
+        const m0 = first0.morse_pretty || first0.morse || '';
+        const deff = first0.dot_effect || data.dot_effect || 'bloom';
+        const deff2 = first0.dash_effect || data.dash_effect || 'bloom';
+        setMorseSig('init:' + m0 + ':' + deff + ':' + deff2);
+        setCurrentMorse(m0);
+        setCurDotEff(deff);
+        setCurDashEff(deff2);
+      } else {
+        setMorseSig(null);
+        setCurrentMorse('');
+        setCurDotEff(null);
+        setCurDashEff(null);
+      }
     }
   };
 
@@ -1786,6 +1847,9 @@ const MusicScreen = ({ isActive = true }) => {
 
   const progressRatio = duration > 0 ? Math.min(currentTime / duration, 1) : 0;
   const introRatio = introMs > 0 ? Math.min(currentTime * 1000 / introMs, 1) : 0;
+  const introAnimDelayMs = result?.intro_anim_delay_ms ?? (result?.demo ? 6000 : 0);
+  const introAnimReady = introAnimDelayMs <= 0 || currentTime * 1000 >= introAnimDelayMs;
+  const displayLetterIdx = introAnimReady ? currentLetterIdx : -1;
 
   const MORSE_EFFECT_STAGGER = { bloom: 95, hit: 220, crisp: 60, pixel: 80, pluck: 140 };
   const pickEffect = (ch, deff, deff2) => {
@@ -1820,18 +1884,107 @@ const MusicScreen = ({ isActive = true }) => {
     : null;
   let currentHeroIdx = -1;
   let playedHeroSet = null;
-  if (isPhraseMode && currentLetterIdx >= 0) {
+  if (isPhraseMode && displayLetterIdx >= 0) {
     playedHeroSet = new Set();
-    for (let i = 0; i <= currentLetterIdx; i++) {
+    for (let i = 0; i <= displayLetterIdx; i++) {
       const hi = timeline[i]?.hero_idx;
       if (typeof hi === 'number') playedHeroSet.add(hi);
     }
-    const curHi = timeline[currentLetterIdx]?.hero_idx;
+    const curHi = timeline[displayLetterIdx]?.hero_idx;
     if (typeof curHi === 'number') {
       currentHeroIdx = curHi;
       playedHeroSet.delete(curHi);
     }
   }
+
+  // 当前曲目是否已收藏
+  const isSaved = result ? savedTracks.some(t => t.audio_url === result.audio_url) : false;
+
+  // 下载当前曲目
+  const handleDownload = async () => {
+    if (!result?.audio_url || isDownloading) return;
+    haptic(8);
+    setIsDownloading(true);
+    try {
+      const rawUrl = result.audio_url;
+      const url = rawUrl.startsWith('http')
+        ? rawUrl
+        : apiUrl(rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`);
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      const name = (result.word || 'morse').toLowerCase().replace(/\s+/g, '_');
+      a.download = `${name}_morse.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    } catch (_) {}
+    setIsDownloading(false);
+    setShowSongMenu(false);
+  };
+
+  // 收藏 / 取消收藏
+  const handleToggleSave = () => {
+    if (!result) return;
+    haptic(6);
+    const rawUrl = result.audio_url;
+    const url = rawUrl.startsWith('http')
+      ? rawUrl
+      : apiUrl(rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`);
+    setSavedTracks(prev => {
+      let next;
+      if (prev.some(t => t.audio_url === result.audio_url)) {
+        next = prev.filter(t => t.audio_url !== result.audio_url);
+      } else {
+        next = [...prev, {
+          audio_url: result.audio_url,
+          stream_url: url,
+          word: result.word || '',
+          style_label: result.style_label || '',
+          savedAt: Date.now(),
+        }];
+      }
+      try { localStorage.setItem('morse-saved-tracks', JSON.stringify(next)); } catch (_) {}
+      return next;
+    });
+    setShowSongMenu(false);
+  };
+
+  const handlePlayFromFavorites = (track) => {
+    haptic(6);
+    setShowFavorites(false);
+    // 构造一个最小 result 对象，使播放器能正常显示和播放
+    const fakeResult = {
+      audio_url:   track.audio_url,
+      word:        track.word        || '',
+      style_label: track.style_label || '声印',
+      demo:        false,
+      timeline:    [],
+    };
+    setResult(fakeResult);
+    setTimeline([]);
+    setCurrentLetterIdx(-1);
+    setCurrentMorse('');
+    setIsPlaying(false);
+    if (audioRef.current) {
+      const url = track.stream_url || track.audio_url;
+      audioRef.current.src = url;
+      audioRef.current.load();
+      audioRef.current.play().catch(() => {});
+      setIsPlaying(true);
+    }
+  };
+
+  const handleRemoveFromFavorites = (trackUrl) => {
+    haptic(4);
+    setSavedTracks(prev => {
+      const next = prev.filter(t => t.audio_url !== trackUrl);
+      try { localStorage.setItem('morse-saved-tracks', JSON.stringify(next)); } catch (_) {}
+      return next;
+    });
+  };
 
   const resetToEdit = () => {
     haptic(6);
@@ -1860,9 +2013,9 @@ const MusicScreen = ({ isActive = true }) => {
               style={{ background: 'var(--gold-100)', boxShadow: '0 0 8px var(--gold-100)', animation: 'pulse 1.6s ease-in-out infinite' }}
               aria-hidden="true"
             />
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 pr-1">
               <p
-                className="text-[14px] leading-tight truncate"
+                className="text-[15px] leading-tight truncate"
                 style={{ color: 'var(--gold-100)', fontFamily: 'var(--font-display)', letterSpacing: '0.02em' }}
               >
                 <strong>{(displayPhrase || result.word || '').toUpperCase()}</strong>
@@ -1873,7 +2026,7 @@ const MusicScreen = ({ isActive = true }) => {
               >
                 {result.style_label}
               </p>
-            </div>
+        </div>
           </div>
         ) : (
           // 编辑态极简品牌角：一个点 + 一个划 + "声印"字样，去掉生硬 slogan
@@ -1911,14 +2064,34 @@ const MusicScreen = ({ isActive = true }) => {
               </span>
             </button>
           )}
-          <button type="button" aria-label="分享" className="btn-icon btn-tactile w-8 h-8">
-            <Share2 className="w-[15px] h-[15px]" />
-          </button>
+          {/* 我的收藏（心形图标；角标挂在外层避免被圆钮裁切） */}
+          <div className="relative flex-shrink-0 pr-0.5 pt-0.5">
+            <button
+              type="button"
+              aria-label={`我的收藏（${savedTracks.length} 首）`}
+              onClick={() => { haptic(4); setShowFavorites(true); }}
+              className="btn-icon btn-tactile w-8 h-8 overflow-visible"
+            >
+              <Heart className="w-[17px] h-[17px]" strokeWidth={2.2} style={{ color: 'var(--gold-300)' }} />
+            </button>
+            {savedTracks.length > 0 && (
+              <span
+                className="pointer-events-none absolute z-20 flex min-h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[10px] font-bold leading-none text-white shadow-[0_1px_4px_rgba(0,0,0,0.35)]"
+                style={{
+                  background: 'linear-gradient(135deg,#f97316,#fb923c)',
+                  top: '-2px',
+                  right: '-4px',
+                }}
+              >
+                {savedTracks.length > 9 ? '9+' : savedTracks.length}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* scrollable content */}
-      <div className="flex-1 overflow-y-auto space-y-2.5 flex-shrink-0 pr-1" style={{ maxHeight: 'calc(100vh - 180px)' }}>
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col space-y-2.5 pr-1">
 
         {/* 表单：仅在未出结果时展示 */}
         {!result && (
@@ -1957,7 +2130,7 @@ const MusicScreen = ({ isActive = true }) => {
             type="text"
             value={word}
             onChange={e => setWord(e.target.value)}
-            placeholder="例如 Lucas / love / home"
+            placeholder="love/hate/horse"
             maxLength={10}
             autoComplete="off"
             className="w-full px-3.5 py-2 rounded-2xl text-[14px] transition-colors"
@@ -2020,21 +2193,21 @@ const MusicScreen = ({ isActive = true }) => {
                   {styles.map(s => {
                     const active = s.id === selectedStyle;
                     return (
-                      <button
-                        key={s.id}
+                    <button
+                      key={s.id}
                         type="button"
                         role="option"
                         aria-selected={active}
                         onClick={() => { haptic(4); setSelectedStyle(s.id); setStylePanelOpen(false); }}
                         className="btn-tactile py-2.5 px-2 rounded-full text-sm text-center transition-all"
-                        style={{
+                      style={{
                           background: active ? 'rgba(201,162,74,0.14)' : 'var(--surface-sunken)',
                           color: active ? 'var(--gold-100)' : 'var(--text-muted)',
                           border: `1px solid ${active ? 'rgba(201,162,74,0.45)' : 'var(--border-subtle)'}`,
-                        }}
-                      >
-                        {s.label}
-                      </button>
+                      }}
+                    >
+                      {s.label}
+                    </button>
                     );
                   })}
                 </div>
@@ -2117,6 +2290,42 @@ const MusicScreen = ({ isActive = true }) => {
             )}
           </p>
         )}
+
+        {/* 快捷灵感词 —— 点选即填充输入框，降低上手门槛 */}
+        <div className="pt-1">
+          <p className="text-[9.5px] mb-2 tracking-[0.24em] uppercase font-medium" style={{ color: 'var(--text-muted)' }}>
+            没有头绪？试试这些
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {['love', 'hate', 'horse', 'star', 'gold', 'sos', 'free', 'home'].map(w => (
+              <button
+                key={w}
+                type="button"
+                onClick={() => { haptic(4); setWord(w); setStatus(''); setStatusKind(''); }}
+                className="chip-suggest btn-tactile px-3 py-1.5 text-[12px] tracking-wide"
+                style={word.toLowerCase() === w ? { background: 'rgba(201,162,74,0.14)', borderColor: 'rgba(201,162,74,0.45)', color: 'var(--gold-100)' } : undefined}
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 品牌律动 —— 声波律动条，填充留白并呼应「声印」主题 */}
+        <div className="flex-1 flex flex-col items-center justify-end pt-6 pb-1 pointer-events-none select-none" aria-hidden="true">
+          <div className="flex items-end justify-center gap-[3px]" style={{ height: 34 }}>
+            {[0.5, 0.8, 0.35, 1, 0.6, 0.9, 0.45, 0.75, 0.55, 1, 0.4, 0.7, 0.85, 0.5].map((h, i) => (
+              <span
+                key={i}
+                className="eq-bar"
+                style={{ height: `${Math.round(h * 34)}px`, animationDelay: `${i * 0.09}s`, animationDuration: `${1.1 + (i % 4) * 0.22}s` }}
+              />
+            ))}
+          </div>
+          <p className="text-[10px] mt-3 tracking-[0.28em] uppercase" style={{ color: 'var(--text-faint)' }}>
+            把心事，谱成一段只有你懂的旋律
+          </p>
+        </div>
         </>
         )}
 
@@ -2256,42 +2465,42 @@ const MusicScreen = ({ isActive = true }) => {
                       })}
                     </div>
                   ) : (
-                    <div
-                      className="flex justify-center gap-1 flex-wrap"
+                  <div
+                    className="flex justify-center gap-1 flex-wrap"
                       style={{ fontSize: letters.length > 5 ? '1.45rem' : '2.25rem', letterSpacing: letters.length > 5 ? '0.09em' : '0.16em', lineHeight: 1 }}
-                    >
-                      {letters.map((ch, i) => (
-                        <span
-                          key={i}
-                          className="inline-block transition-all duration-500"
-                          style={{
-                            color: i < currentLetterIdx ? 'rgba(242,239,232,0.78)' : i === currentLetterIdx ? 'var(--gold-100)' : 'rgba(242,239,232,0.08)',
-                            transform: i < currentLetterIdx ? 'translateY(0)' : i === currentLetterIdx ? 'translateY(-2px) scale(1.06)' : 'translateY(4px)',
-                            textShadow: i === currentLetterIdx ? '0 0 18px rgba(201,162,74,0.4)' : 'none',
-                          }}
-                        >
-                          {ch}
-                        </span>
-                      ))}
-                    </div>
+                  >
+                    {letters.map((ch, i) => (
+                      <span
+                        key={i}
+                        className="inline-block transition-all duration-500"
+                        style={{
+                            color: i < displayLetterIdx ? 'rgba(242,239,232,0.78)' : i === displayLetterIdx ? 'var(--gold-100)' : 'rgba(242,239,232,0.08)',
+                          transform: i < displayLetterIdx ? 'translateY(0)' : i === displayLetterIdx ? 'translateY(-2px) scale(1.06)' : 'translateY(4px)',
+                            textShadow: i === displayLetterIdx ? '0 0 18px rgba(201,162,74,0.4)' : 'none',
+                        }}
+                      >
+                        {ch}
+                      </span>
+                    ))}
+                  </div>
                   )}
                 </div>
 
-                {/* morse animated — key 包含 morseSig 以便每次切换重建 span、重跑动画 */}
+                {/* morse animated — 前奏延迟期内保持静止 */}
                 <div className="text-center mb-2.5" style={{ fontFamily: 'var(--font-mono)', minHeight: '1.35em' }}>
                   <div className="flex justify-center items-center gap-3" style={{ opacity: currentTime * 1000 > introMs ? 0.32 : 0.88 }}>
-                    {morseSpans?.map(({ ch, eff, delay, key }) => {
+                    {introAnimReady && morseSpans?.map(({ ch, eff, delay, key }) => {
                       const isDot = ch === '.' || ch === '·';
                       const isDash = ch === '-' || ch === '−';
                       return (
-                        <span
+                      <span
                           key={`${morseSig || 'init'}-${key}`}
-                          className={`sym ${eff}`}
-                          style={{
+                        className={`sym ${eff}`}
+                        style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            animationDelay: delay + 'ms',
+                          animationDelay: delay + 'ms',
                             color: 'var(--gold-100)',
                             fontSize: isDot || isDash ? 0 : '1.05rem',
                             fontWeight: isDot || isDash ? undefined : 700,
@@ -2323,7 +2532,7 @@ const MusicScreen = ({ isActive = true }) => {
                           ) : (
                             ch
                           )}
-                        </span>
+                      </span>
                       );
                     })}
                   </div>
@@ -2350,12 +2559,12 @@ const MusicScreen = ({ isActive = true }) => {
                   aria-valuenow={Math.round(currentTime)}
                   style={{ touchAction: 'none' }}
                   onPointerDown={(e) => {
-                    if (!audioRef.current || !duration) return;
+                  if (!audioRef.current || !duration) return;
                     e.preventDefault();
                     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
                     isSeekingRef.current = true;
                     haptic(4);
-                    const rect = e.currentTarget.getBoundingClientRect();
+                  const rect = e.currentTarget.getBoundingClientRect();
                     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                     const t = ratio * duration;
                     audioRef.current.currentTime = t;
@@ -2391,7 +2600,19 @@ const MusicScreen = ({ isActive = true }) => {
                   <span style={{ color: 'var(--text-muted)' }}>{fmtAudio(duration)}</span>
                 </div>
 
-                <div className="flex items-center justify-center">
+                <div className="flex items-center justify-center gap-5">
+                  {/* 收藏按钮 */}
+                  <button
+                    type="button"
+                    aria-label={isSaved ? '取消收藏' : '收藏'}
+                    onClick={handleToggleSave}
+                    className="btn-icon btn-tactile w-10 h-10 rounded-full flex items-center justify-center"
+                    style={isSaved ? { color: '#f97316', borderColor: 'rgba(249,115,22,0.4)' } : undefined}
+                  >
+                    <Heart className={`w-4 h-4 ${isSaved ? 'fill-[#f97316]' : ''}`} />
+                  </button>
+
+                  {/* 播放 / 暂停 */}
                   <button
                     type="button"
                     aria-label={isPlaying ? '暂停' : '播放'}
@@ -2401,6 +2622,16 @@ const MusicScreen = ({ isActive = true }) => {
                     {isPlaying
                       ? <Pause className="w-5 h-5 fill-[#1a1a1a]" />
                       : <Play className="w-5 h-5 fill-[#1a1a1a] ml-0.5" />}
+                  </button>
+
+                  {/* 更多菜单 */}
+                  <button
+                    type="button"
+                    aria-label="更多操作"
+                    onClick={() => { haptic(4); setShowSongMenu(true); }}
+                    className="btn-icon btn-tactile w-10 h-10 rounded-full flex items-center justify-center"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -2418,6 +2649,248 @@ const MusicScreen = ({ isActive = true }) => {
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
       />
+
+      {/* 歌曲菜单弹层 */}
+      {showSongMenu && result && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col justify-end sheet-backdrop"
+          style={{ background: 'rgba(8,7,9,0.70)', backdropFilter: 'blur(6px)' }}
+          onClick={() => setShowSongMenu(false)}
+        >
+          <div
+            className="rounded-t-[28px] px-4 pt-4 pb-8 sheet-panel"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border-subtle)', borderBottom: 'none' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 拖动指示条 */}
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full" style={{ background: 'var(--border)' }} aria-hidden="true" />
+            {/* 曲目信息 */}
+            <div className="flex items-center gap-3 mb-4 pb-3"
+                 style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+              <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0"
+                   style={{ border: '1px solid rgba(201,162,74,0.3)' }}>
+                <img src={result.demo ? '/img/mission-impossible-poster.png' : '/img/album-cover.png'}
+                     alt="" className="w-full h-full object-cover" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[13px] font-semibold truncate" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+                  {(result.word || '').toUpperCase()}
+                </p>
+                <p className="text-[10.5px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  {result.style_label || '声印'}
+                </p>
+              </div>
+              <button type="button" onClick={() => setShowSongMenu(false)}
+                      className="ml-auto btn-icon w-8 h-8 flex-shrink-0"
+                      style={{ color: 'var(--text-muted)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 操作列表 */}
+            <div className="space-y-1">
+              {/* 下载 */}
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={isDownloading}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl transition-colors row-tappable"
+                style={{ background: 'var(--surface-sunken)', opacity: isDownloading ? 0.6 : 1 }}
+              >
+                <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                     style={{ background: 'rgba(99,182,255,0.12)', border: '1px solid rgba(99,182,255,0.25)' }}>
+                  <Download className="w-4 h-4" style={{ color: '#63b6ff' }} />
+                </div>
+                <div className="text-left">
+                  <p className="text-[13px] font-medium" style={{ color: 'var(--text)' }}>
+                    {isDownloading ? '下载中…' : '下载 MP3'}
+                  </p>
+                  <p className="text-[10.5px]" style={{ color: 'var(--text-muted)' }}>保存到本机相册 / 文件</p>
+                </div>
+              </button>
+
+              {/* 收藏 */}
+              <button
+                type="button"
+                onClick={handleToggleSave}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl transition-colors row-tappable"
+                style={{ background: 'var(--surface-sunken)' }}
+              >
+                <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                     style={{
+                       background: isSaved ? 'rgba(249,115,22,0.12)' : 'rgba(255,255,255,0.06)',
+                       border: isSaved ? '1px solid rgba(249,115,22,0.35)' : '1px solid var(--border-subtle)',
+                     }}>
+                  <Heart className={`w-4 h-4 ${isSaved ? 'fill-[#f97316]' : ''}`}
+                         style={{ color: isSaved ? '#f97316' : 'var(--text-muted)' }} />
+                </div>
+                <div className="text-left">
+                  <p className="text-[13px] font-medium" style={{ color: 'var(--text)' }}>
+                    {isSaved ? '取消收藏' : '收藏这首歌'}
+                  </p>
+                  <p className="text-[10.5px]" style={{ color: 'var(--text-muted)' }}>
+                    {isSaved ? '从收藏列表中移除' : `已保存 ${savedTracks.length} 首 · 存于本机`}
+                  </p>
+                </div>
+                {isSaved && (
+                  <Check className="w-4 h-4 ml-auto flex-shrink-0" style={{ color: '#f97316' }} />
+                )}
+              </button>
+
+              {/* 分享（占位，后续可接系统分享） */}
+              <button
+                type="button"
+                onClick={() => {
+                  haptic(4);
+                  setShowSongMenu(false);
+                  try {
+                    if (navigator.share) {
+                      navigator.share({ title: (result.word || '').toUpperCase() + ' · 声印', text: '用摩斯码生成的音乐' });
+                    }
+                  } catch (_) {}
+                }}
+                className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl transition-colors row-tappable"
+                style={{ background: 'var(--surface-sunken)' }}
+              >
+                <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
+                     style={{ background: 'rgba(167,243,208,0.10)', border: '1px solid rgba(167,243,208,0.22)' }}>
+                  <Share2 className="w-4 h-4" style={{ color: '#a7f3d0' }} />
+                </div>
+                <div className="text-left">
+                  <p className="text-[13px] font-medium" style={{ color: 'var(--text)' }}>分享</p>
+                  <p className="text-[10.5px]" style={{ color: 'var(--text-muted)' }}>通过系统分享给朋友</p>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 我的收藏面板 */}
+      {showFavorites && (
+        <div
+          className="absolute inset-0 z-50 flex flex-col justify-end sheet-backdrop"
+          style={{ background: 'rgba(8,7,9,0.72)', backdropFilter: 'blur(6px)' }}
+          onClick={() => setShowFavorites(false)}
+        >
+          <div
+            className="rounded-t-[28px] px-4 pt-4 pb-8 flex flex-col sheet-panel"
+            style={{ background: 'var(--surface)', border: '1px solid var(--border-subtle)',
+                     borderBottom: 'none', maxHeight: '78%' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 拖动指示条 */}
+            <div className="mx-auto mb-3 h-1 w-10 rounded-full flex-shrink-0" style={{ background: 'var(--border)' }} aria-hidden="true" />
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between mb-3 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <Heart className="w-4 h-4 fill-[#f97316]" style={{ color: '#f97316' }} />
+                <span className="text-[13px] font-semibold tracking-[0.10em]"
+                      style={{ color: 'var(--gold-100)', fontFamily: 'var(--font-display)' }}>
+                  我的收藏
+                </span>
+                {savedTracks.length > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full"
+                        style={{ background: 'rgba(249,115,22,0.12)', color: '#f97316',
+                                 border: '1px solid rgba(249,115,22,0.25)' }}>
+                    {savedTracks.length} 首
+                  </span>
+                )}
+              </div>
+              <button type="button" onClick={() => setShowFavorites(false)}
+                      className="btn-icon w-8 h-8 flex items-center justify-center rounded-full"
+                      style={{ color: 'var(--text-muted)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* 列表 */}
+            <div className="overflow-y-auto flex-1 -mx-1 px-1">
+              {savedTracks.length === 0 ? (
+                <div className="py-12 flex flex-col items-center gap-2">
+                  <Heart className="w-8 h-8 opacity-20" style={{ color: 'var(--text-muted)' }} />
+                  <p className="text-[12px]" style={{ color: 'var(--text-faint)' }}>
+                    还没有收藏，点击心形按钮收藏喜欢的歌曲
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5 pb-2">
+                  {[...savedTracks].reverse().map((track, i) => {
+                    const isCurrentPlaying = result?.audio_url === track.audio_url && isPlaying;
+                    const isCurrent        = result?.audio_url === track.audio_url;
+                    const date = track.savedAt
+                      ? new Date(track.savedAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+                      : '';
+                    return (
+                      <div key={track.audio_url + i}
+                           className="flex items-center gap-3 px-3 py-2.5 rounded-2xl row-tappable"
+                           style={{
+                             background: isCurrent
+                               ? 'linear-gradient(135deg,rgba(249,115,22,0.10) 0%,rgba(201,162,74,0.06) 100%)'
+                               : 'var(--surface-sunken)',
+                             border: isCurrent
+                               ? '1px solid rgba(249,115,22,0.28)'
+                               : '1px solid var(--border-subtle)',
+                           }}>
+                        {/* 序号 / 播放指示 */}
+                        <div className="w-5 flex-shrink-0 flex items-center justify-center">
+                          {isCurrentPlaying
+                            ? <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: '#f97316' }} />
+                            : <span className="text-[11px] font-mono" style={{ color: 'var(--text-faint)' }}>
+                                {savedTracks.length - i}
+                              </span>
+                          }
+                        </div>
+
+                        {/* 歌曲信息 */}
+                        <div className="flex-1 min-w-0 cursor-pointer"
+                             onClick={() => handlePlayFromFavorites(track)}>
+                          <p className="text-[13px] font-semibold truncate"
+                             style={{ color: isCurrent ? 'var(--gold-100)' : 'var(--text)',
+                                      fontFamily: 'var(--font-display)' }}>
+                            {(track.word || '声印').toUpperCase()}
+                          </p>
+                          <p className="text-[10.5px] mt-0.5 flex items-center gap-1.5"
+                             style={{ color: 'var(--text-muted)' }}>
+                            <span>{track.style_label || '声印'}</span>
+                            {date && <><span style={{ opacity: 0.35 }}>·</span><span>{date}</span></>}
+                          </p>
+                        </div>
+
+                        {/* 播放按钮 */}
+                        <button type="button"
+                                aria-label="播放"
+                                onClick={() => handlePlayFromFavorites(track)}
+                                className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 transition-colors"
+                                style={{
+                                  background: isCurrent
+                                    ? 'rgba(249,115,22,0.18)'
+                                    : 'rgba(201,162,74,0.10)',
+                                  border: isCurrent
+                                    ? '1px solid rgba(249,115,22,0.35)'
+                                    : '1px solid rgba(201,162,74,0.20)',
+                                }}>
+                          <Play className="w-3.5 h-3.5 ml-0.5"
+                                style={{ color: isCurrent ? '#f97316' : 'var(--gold-300)' }} />
+                        </button>
+
+                        {/* 移除收藏 */}
+                        <button type="button"
+                                aria-label="移除收藏"
+                                onClick={() => handleRemoveFromFavorites(track.audio_url)}
+                                className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0"
+                                style={{ color: 'var(--text-faint)' }}>
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* morse symbol animation keyframes */}
       <style>{`
@@ -2608,7 +3081,7 @@ const PlayScreen = ({ isActive: _isActive = true }) => {
               <RotateCcw className="w-4 h-4" />
               从头再读一遍
             </button>
-          </div>
+            </div>
         ) : (
           <>
             <div className="flex items-center justify-between gap-2 flex-shrink-0">
@@ -2631,8 +3104,8 @@ const PlayScreen = ({ isActive: _isActive = true }) => {
                 <span className="text-[10px] font-mono" style={{ color: 'var(--text-faint)' }}>
                   得分 {score}
                 </span>
-              </div>
-            </div>
+        </div>
+      </div>
 
             <p className="text-[13px] leading-relaxed flex-shrink-0" style={{ color: 'var(--text)' }}>
               {current?.prompt}
@@ -2655,7 +3128,7 @@ const PlayScreen = ({ isActive: _isActive = true }) => {
                     bg = 'rgba(239, 68, 68, 0.1)';
                   }
                   return (
-                    <button
+        <button
                       key={`${current?.id}-${i}-${label.slice(0, 8)}`}
                       type="button"
                       role="radio"
@@ -2691,8 +3164,8 @@ const PlayScreen = ({ isActive: _isActive = true }) => {
                         {isWrongPick ? (
                           <X className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: '#fca5a5' }} aria-hidden="true" />
                         ) : null}
-                      </div>
-                    </button>
+          </div>
+        </button>
                   );
                 })}
               </div>

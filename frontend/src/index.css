@@ -99,27 +99,28 @@ body {
    Page shell — phone frame
    ----------------------------------------------------------- */
 .app-page {
+  /* 移动端默认：铺满整屏，自适应任意机型（用 dvh 兼容浏览器地址栏收缩） */
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   background:
     radial-gradient(ellipse 130% 80% at 50% -10%, #1d1a20 0%, var(--bg) 55%),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
-  padding: 24px 16px;
+  padding: 0;
   box-sizing: border-box;
 }
 
 .phone-shell {
-  width: min(var(--phone-w), calc(100vw - 32px));
-  height: min(var(--phone-h), calc(100vh - 48px));
-  max-height: calc(100vh - 48px);
-  background: linear-gradient(145deg, #2a2a32 0%, #121218 100%);
-  border-radius: var(--radius-out);
-  padding: 12px;
-  box-shadow:
-    0 24px 80px rgba(0, 0, 0, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  /* 无外框：直接占满可用视口，随机型缩放 */
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
   flex-shrink: 0;
   box-sizing: border-box;
 }
@@ -127,35 +128,34 @@ body {
 .phone-screen {
   width: 100%;
   height: 100%;
-  border-radius: var(--radius-in);
+  border-radius: 0;
   background: var(--surface);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
+  border: none;
   position: relative;
   box-sizing: border-box;
 }
 
-.phone-status-bar {
-  flex-shrink: 0;
-  height: 18px;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding-top: 5px;
-  pointer-events: none;
-  z-index: 50;
-}
-
-.phone-punch {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 32% 32%, #3d3d48 0%, #12121a 42%, #050508 100%);
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.14),
-    0 0 0 2px rgba(10, 10, 13, 0.95);
+/* 桌面/大屏：居中呈现为竖屏预览卡片，去掉厚重金属外框，仅保留圆角与投影 */
+@media (min-width: 480px) {
+  .app-page {
+    align-items: center;
+    padding: 20px 16px;
+  }
+  .phone-shell {
+    width: min(var(--phone-w), calc(100vw - 32px));
+    height: min(var(--phone-h), calc(100vh - 40px));
+    max-height: calc(100vh - 40px);
+    border-radius: var(--radius-in);
+    overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  }
+  .phone-screen {
+    border-radius: var(--radius-in);
+    border: 1px solid var(--border);
+  }
 }
 
 .phone-content {
@@ -362,6 +362,115 @@ button:focus-visible {
   .tab-enter { animation: none; }
 }
 
+/* 字母教学浮层：从信使 ⋯ 菜单滑入（右→左，呼应「拓展抽屉」的空间感） */
+@keyframes learnOverlayIn {
+  0%   { opacity: 0; transform: translateX(16px); }
+  100% { opacity: 1; transform: translateX(0);    }
+}
+.learn-overlay-enter { animation: learnOverlayIn 260ms var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .learn-overlay-enter { animation: none; }
+}
+
+/* -----------------------------------------------------------
+   Bottom-sheet / modal entrance — backdrop fade + panel slide-up
+   ----------------------------------------------------------- */
+@keyframes sheetBackdropIn {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes sheetPanelIn {
+  0%   { opacity: 0; transform: translateY(24px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes sheetPanelInTop {
+  0%   { opacity: 0; transform: translateY(-24px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.sheet-backdrop  { animation: sheetBackdropIn 200ms var(--ease-out) both; }
+.sheet-panel     { animation: sheetPanelIn 320ms var(--ease-spring) both; }
+.sheet-panel-top { animation: sheetPanelInTop 320ms var(--ease-spring) both; }
+@media (prefers-reduced-motion: reduce) {
+  .sheet-backdrop, .sheet-panel, .sheet-panel-top { animation: none; }
+}
+
+/* Centered pop-in (for dialogs anchored to viewport center) */
+@keyframes popIn {
+  0%   { opacity: 0; transform: scale(0.92); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.pop-in { animation: popIn 260ms var(--ease-spring) both; }
+
+/* Tappable list-row — clear hover/press affordance on non-button rows */
+.row-tappable {
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+.row-tappable:hover { border-color: rgba(201, 162, 74, 0.4) !important; }
+.row-tappable:active { transform: scale(0.985); }
+
+/* Dropdown menu item — hover/press affordance */
+.menu-item {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.menu-item:hover { background: rgba(201, 162, 74, 0.1); }
+.menu-item:active { background: rgba(201, 162, 74, 0.16); }
+
+/* Suggestion chip — quick-fill pills */
+.chip-suggest {
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  border-radius: 9999px;
+  transition: background var(--dur-base) var(--ease-out),
+              border-color var(--dur-base) var(--ease-out),
+              color var(--dur-base) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+.chip-suggest:hover {
+  background: rgba(201, 162, 74, 0.1);
+  border-color: rgba(201, 162, 74, 0.4);
+  color: var(--gold-100);
+}
+.chip-suggest:active { transform: scale(0.94); }
+
+/* Ambient equalizer bars — decorative brand flourish (声印) */
+.eq-bar {
+  width: 3px;
+  border-radius: 9999px;
+  background: linear-gradient(180deg, var(--gold-100), var(--gold-500));
+  transform-origin: bottom center;
+  animation: eqPulse 1.4s var(--ease-in-out) infinite;
+}
+@keyframes eqPulse {
+  0%, 100% { transform: scaleY(0.35); opacity: 0.5; }
+  50%      { transform: scaleY(1);    opacity: 0.9; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eq-bar { animation: none; transform: scaleY(0.6); }
+}
+
+/* Soft idle hint — gentle breathing text near call-to-action */
+@keyframes hintBreath {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 0.95; }
+}
+.hint-breath { animation: hintBreath 2.8s var(--ease-in-out) infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .hint-breath { animation: none; opacity: 0.7; }
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Gold text gradient helper */
 .text-gold-grad {
   background: linear-gradient(180deg, var(--gold-100) 0%, var(--gold-400) 100%);
@@ -393,6 +502,49 @@ input, textarea, select {
 }
 input:focus, textarea:focus, select:focus {
   outline: none;
+}
+
+/* =============================================================
+   Morse letter animation (SVG, replaces letter/*.mp4 videos)
+   ============================================================= */
+.morse-letter-stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-sunken);
+  overflow: hidden;
+}
+
+.morse-letter-svg {
+  width: auto;
+  height: 88%;
+  max-width: 100%;
+  display: block;
+}
+
+/* 摩斯符号：拼字时逐个弹出；读码时脉冲发光 */
+.morse-el {
+  animation: morseElIn 200ms var(--ease-spring) both;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.morse-el.is-active {
+  animation: morseElPulse 200ms var(--ease-out) both;
+}
+
+@keyframes morseElIn {
+  0%   { opacity: 0; transform: scale(0.2); }
+  70%  { opacity: 1; transform: scale(1.18); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes morseElPulse {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.22); }
+  100% { transform: scale(1.06); }
 }
 
 /* =============================================================

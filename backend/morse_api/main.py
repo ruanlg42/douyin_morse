@@ -38,6 +38,19 @@ from .styles import list_styles, resolve as resolve_style
 
 logger = logging.getLogger(__name__)
 
+# 确保 pydub 能找到 ffmpeg/ffprobe（混音解码 MP3 依赖）。
+# 系统未装 ffmpeg 时，用 pip 安装的 static-ffmpeg 自带二进制注册到 PATH。
+import shutil as _shutil
+
+if _shutil.which("ffmpeg") is None or _shutil.which("ffprobe") is None:
+    try:
+        import static_ffmpeg  # type: ignore
+
+        static_ffmpeg.add_paths()
+        logger.info("static-ffmpeg 已注册到 PATH：ffmpeg=%s", _shutil.which("ffmpeg"))
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("未找到 ffmpeg，且 static-ffmpeg 不可用：%s（生成将失败）", _e)
+
 STATIC_DIR = PACKAGE_DIR / "static"
 OUTPUT_DIR = PACKAGE_DIR / "outputs"
 ASSETS_DIR = PACKAGE_DIR / "assets"
@@ -139,10 +152,65 @@ _MISSION_DEMO = {
     "with_vocals": False,
     "audio_url": "/assets/mission.mp3",
     "intro_duration_ms": _MISSION_INTRO_MS,
+    "intro_anim_delay_ms": 6000,
     "letter_timeline": _MISSION_TIMELINE,
     "demo": True,
     "demo_caption": f"主题曲前奏里 —— M（−−）+ I（··），循环 {_MISSION_CYCLES} 次",
 }
+
+
+_HORSE_DISPLAY_PHRASE = "快乐小马 HORSE"
+
+
+def _build_horse_demo_payload() -> dict:
+    """内置「快乐小马」示例元数据：摩斯为 HORSE；需 assets/horse.mp3。"""
+    cfg = load_config()
+    style = resolve_style("folk_acoustic")
+    if style.bpm_hint:
+        cfg = replace(cfg, bpm=int(style.bpm_hint))
+
+    morse = abbrev_to_morse("HORSE")
+    _, intro_ms, intervals = render_intro_drums_with_timeline(
+        morse.morse_dot_dash,
+        cfg,
+        short_voice=style.drum_voices[0],
+        long_voice=style.drum_voices[1],
+    )
+    dot_effect = effect_for_voice(style.drum_voices[0])
+    dash_effect = effect_for_voice(style.drum_voices[1])
+    letters = list(morse.abbrev_normalized)
+    hero_base = len(_HORSE_DISPLAY_PHRASE) - len(morse.abbrev_normalized)
+    letter_timeline: list[dict] = []
+    for i, iv in enumerate(intervals):
+        letter_timeline.append(
+            {
+                "letter": letters[i] if i < len(letters) else "",
+                "morse": iv["morse"],
+                "morse_pretty": iv["morse"].replace(".", "·").replace("-", "−"),
+                "start_ms": iv["start_ms"],
+                "end_ms": iv["end_ms"],
+                "hero_idx": hero_base + i,
+                "dot_effect": dot_effect,
+                "dash_effect": dash_effect,
+            }
+        )
+    return {
+        "word": morse.abbrev_normalized,
+        "display_phrase": _HORSE_DISPLAY_PHRASE,
+        "morse_pretty": morse.morse_pretty,
+        "style_label": "快乐小马主题（HORSE 摩斯）",
+        "with_vocals": False,
+        "audio_url": "/assets/horse.mp3",
+        "intro_duration_ms": intro_ms,
+        "letter_timeline": letter_timeline,
+        "demo": False,
+        "dot_effect": dot_effect,
+        "dash_effect": dash_effect,
+        "demo_caption": "前奏为 HORSE 五字母摩斯；生成提示词要求包含「快乐小马」",
+    }
+
+
+_HORSE_DEMO = _build_horse_demo_payload()
 
 
 class GenerateBody(BaseModel):
@@ -195,7 +263,14 @@ def _mix_intro_drums_with_music(
     return buf.getvalue()
 
 
-def _run_generate(word: str, style_id: Optional[str], with_vocals: bool = False) -> dict:
+def _run_generate(
+    word: str,
+    style_id: Optional[str],
+    with_vocals: bool = False,
+    *,
+    theme_cn: Optional[str] = None,
+    asset_basename: Optional[str] = None,
+) -> dict:
     cfg = load_config()
     style = resolve_style(style_id)
     if style.bpm_hint:
@@ -239,6 +314,7 @@ def _run_generate(word: str, style_id: Optional[str], with_vocals: bool = False)
         style_hint=style.music_hint,
         fallback_prompt=style.fallback_prompt,
         with_vocals=with_vocals,
+        theme_cn=theme_cn,
     )
 
     lyrics: Optional[str] = None
@@ -263,19 +339,29 @@ def _run_generate(word: str, style_id: Optional[str], with_vocals: bool = False)
         lyrics_from_llm,
     )
 
-    safe = "".join(c for c in morse.abbrev_normalized.lower() if c.isalnum()) or "user"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    variant = "vocal" if with_vocals else "inst"
-    fname = f"m_{safe}_{style.id}_{variant}_{stamp}.mp3"
-    out_path = OUTPUT_DIR / fname
-    out_path.write_bytes(mixed)
+    if asset_basename:
+        safe_asset = "".join(c for c in asset_basename if c.isalnum() or c in ".-_") or "out.mp3"
+        if not safe_asset.lower().endswith(".mp3"):
+            safe_asset = f"{safe_asset}.mp3"
+        out_path = ASSETS_DIR / safe_asset
+        out_path.write_bytes(mixed)
+        audio_url = f"/assets/{safe_asset}"
+        fname = safe_asset
+    else:
+        safe = "".join(c for c in morse.abbrev_normalized.lower() if c.isalnum()) or "user"
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        variant = "vocal" if with_vocals else "inst"
+        fname = f"m_{safe}_{style.id}_{variant}_{stamp}.mp3"
+        out_path = OUTPUT_DIR / fname
+        out_path.write_bytes(mixed)
+        audio_url = f"/media/{fname}"
 
     return {
         "word": morse.abbrev_normalized,
         "morse_pretty": morse.morse_pretty,
         "style_label": style.label,
         "with_vocals": with_vocals,
-        "audio_url": f"/media/{fname}",
+        "audio_url": audio_url,
         "intro_duration_ms": intro_ms,
         "letter_timeline": letter_timeline,
         "dot_effect": dot_effect,
@@ -308,11 +394,23 @@ async def api_styles() -> dict:
 
 @app.get("/api/demo")
 async def api_demo() -> dict:
-    """碟中谍示例（内置时间轴）；不走 AI。需 assets/mission.mp3。"""
+    """碟中谍示例（内置时间轴）；不走 AI。需 assets/mission.mp3（正版短片段）。"""
     audio_path = ASSETS_DIR / "mission.mp3"
     if not audio_path.is_file():
-        raise HTTPException(status_code=404, detail="示例音频缺失，请把 mission.mp3 放到 assets/。")
+        raise HTTPException(status_code=404, detail="示例音频缺失，请将 mission.mp3 放到 assets/。")
     return _MISSION_DEMO
+
+
+@app.get("/api/demo-horse")
+async def api_demo_horse() -> dict:
+    """快乐小马 / HORSE 摩斯示例；需 assets/horse.mp3。生成该文件见 export_horse_demo.py。"""
+    audio_path = ASSETS_DIR / "horse.mp3"
+    if not audio_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="horse.mp3 缺失。请在 backend 目录执行：python -m morse_api.export_horse_demo（需 MiniMax API Key）。",
+        )
+    return dict(_HORSE_DEMO)
 
 
 @app.post("/api/generate")
