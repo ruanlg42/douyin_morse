@@ -637,11 +637,15 @@ def _note_freq(root_note: str = "A", octave: int = 4, semitone_offset: int = 0) 
 
 
 def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str = "pluck") -> np.ndarray:
-    """带音高的乐音：快速起音 + 指数衰减 + 少量泛音，听感像音乐盒/拨弦/铃。"""
+    """带音高的乐音：柔和起音 + 指数衰减 + 少量泛音。
+
+    默认曲里这层会叠在 AI 音乐上；过硬的 attack 会像“后贴敲击音效”。
+    因此这里刻意把起音/收音做得更圆润，让摩斯更像歌曲内部的 motif。
+    """
     n = max(1, int(duration_sec * sr))
     t = np.arange(n, dtype=np.float64) / sr
-    attack = np.clip(t / 0.006, 0.0, 1.0)
     if timbre == "bell":
+        attack_sec = 0.032
         decay = np.exp(-t * 3.0)
         tone = (
             np.sin(2 * np.pi * freq * t)
@@ -649,6 +653,7 @@ def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str =
             + 0.25 * np.sin(2 * np.pi * freq * 3.86 * t)
         )
     elif timbre == "piano":
+        attack_sec = 0.018
         decay = np.exp(-t * 4.2)
         tone = (
             np.sin(2 * np.pi * freq * t)
@@ -657,14 +662,19 @@ def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str =
             + 0.08 * np.sin(2 * np.pi * freq * 4 * t)
         )
     else:  # pluck / music-box
+        attack_sec = 0.020
         decay = np.exp(-t * 6.0)
         tone = (
             np.sin(2 * np.pi * freq * t)
             + 0.35 * np.sin(2 * np.pi * freq * 2 * t)
             + 0.12 * np.sin(2 * np.pi * freq * 3 * t)
         )
-    x = (attack * decay * tone).astype(np.float32)
-    return _norm(x, 0.8)
+    attack = np.sin(np.clip(t / attack_sec, 0.0, 1.0) * (np.pi / 2.0)) ** 2
+    release_len = min(n, max(1, int(0.080 * sr)))
+    release = np.ones(n, dtype=np.float64)
+    release[-release_len:] = np.cos(np.linspace(0.0, np.pi / 2.0, release_len)) ** 2
+    x = (attack * release * decay * tone).astype(np.float32)
+    return _norm(x, 0.62)
 
 
 def build_morse_hook(
@@ -772,5 +782,4 @@ def render_morse_hook_with_timeline(
         dash_ratio=dash_ratio,
         timbre=timbre,
     )
-
 

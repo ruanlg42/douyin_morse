@@ -279,14 +279,14 @@ def _mix_intro_drums_with_music(
 
 
 # 全曲结构分段（相对总时长的比例）与各段 hook 音量(dB, 相对 base_overlay_db 基线)
-# intro：清晰引入；verse：埋底若隐若现；chorus：提亮钻出；outro：回落
+# intro：轻轻露出，避免前几下像外贴敲击；verse：埋底；chorus：再自然抬起
 _SECTION_PLAN = [
-    ("intro", 0.00, 0.16, 9.0),
-    ("verse", 0.16, 0.42, -3.0),
-    ("chorus", 0.42, 0.66, 5.0),
-    ("verse", 0.66, 0.82, -3.0),
-    ("chorus", 0.82, 0.96, 6.0),
-    ("outro", 0.96, 1.00, 0.0),
+    ("intro", 0.00, 0.16, 1.0),
+    ("verse", 0.16, 0.42, -4.0),
+    ("chorus", 0.42, 0.66, 3.0),
+    ("verse", 0.66, 0.82, -4.0),
+    ("chorus", 0.82, 0.96, 3.5),
+    ("outro", 0.96, 1.00, -2.0),
 ]
 
 
@@ -312,6 +312,7 @@ def _mix_hook_across_track(
     sample_rate: int,
     base_overlay_db: float = -12.0,
     target_bpm: Optional[int] = None,
+    first_hook_offset_ms: float = 900.0,
 ) -> tuple[bytes, dict]:
     """
     把「音高化摩斯 hook」按全曲结构铺设并叠入 AI 音乐（全程 numpy 采样域运算，快且干净）：
@@ -356,10 +357,13 @@ def _mix_hook_across_track(
         return 0.0
 
     all_hook_note_starts: list[float] = []
-    t = 0.0
+    t = max(0.0, float(first_hook_offset_ms))
     hook_repeats = 0
+    first_snapped: Optional[float] = None
     while t < total_ms - hook_ms * 0.5:
         snapped = beat_align.snap_ms(t, grid, max_shift_ms=90.0)
+        if first_snapped is None:
+            first_snapped = snapped
         seg_gain = _db_to_gain(base_overlay_db + _section_db(snapped))
         start = int(round(snapped / 1000.0 * sr))
         end = min(n_total, start + hook.shape[0])
@@ -374,7 +378,7 @@ def _mix_hook_across_track(
     duck = np.ones(n_total, dtype=np.float32)
     attack = max(1, int(0.03 * sr))
     release = max(1, int(0.22 * sr))
-    depth = _db_to_gain(-4.5)  # 压到约 -4.5dB
+    depth = _db_to_gain(-3.0)  # 温柔融合：轻压背景即可，避免抽吸感太明显
     # 预生成单个「压低-恢复」窗（1→depth→1）
     dip = np.concatenate([
         1.0 - (1.0 - depth) * np.linspace(0.0, 1.0, attack, dtype=np.float32),
@@ -413,6 +417,7 @@ def _mix_hook_across_track(
         "beat_detected": info.detected,
         "hook_repeats": hook_repeats,
         "total_ms": total_ms,
+        "first_hook_start_ms": round(float(first_snapped or first_hook_offset_ms), 1),
     }
     return buf.getvalue(), meta
 
@@ -561,6 +566,14 @@ def _run_generate(
         out_path.write_bytes(mixed)
         audio_url = f"/media/{fname}"
 
+    first_hook_start_ms = float(mix_meta.get("first_hook_start_ms", 0.0) or 0.0)
+    timeline_for_audio: list[dict] = []
+    for iv in letter_timeline:
+        item = dict(iv)
+        item["start_ms"] = round(float(item.get("start_ms", 0.0)) + first_hook_start_ms, 1)
+        item["end_ms"] = round(float(item.get("end_ms", 0.0)) + first_hook_start_ms, 1)
+        timeline_for_audio.append(item)
+
     _progress("done", 100)
     return {
         "word": morse.abbrev_normalized,
@@ -568,13 +581,15 @@ def _run_generate(
         "style_label": style.label,
         "with_vocals": with_vocals,
         "audio_url": audio_url,
-        "intro_duration_ms": intro_ms,
-        "letter_timeline": letter_timeline,
+        "intro_duration_ms": int(round(intro_ms + first_hook_start_ms)),
+        "intro_anim_delay_ms": 0,
+        "letter_timeline": timeline_for_audio,
         "dot_effect": dot_effect,
         "dash_effect": dash_effect,
         "hook_key": key_desc,
         "hook_bpm": mix_meta.get("detected_bpm", target_bpm),
         "beat_detected": mix_meta.get("beat_detected", False),
+        "first_hook_start_ms": first_hook_start_ms,
     }
 
 

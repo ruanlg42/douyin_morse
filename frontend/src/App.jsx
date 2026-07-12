@@ -5,6 +5,7 @@ import staticQuizData from '../../data/static-quiz.json';
 import JumpGame from './JumpGame.jsx';
 import MorseLetterAnim from './MorseLetterAnim.jsx';
 import { startMorseTone, rampMorseTone, stopMorseTone, getMorseAudioContext } from './morseAudio.js';
+import { OFFLINE_RADIO as GENERATED_OFFLINE_RADIO } from './offlineRadio.js';
 
 // 26 letters -> morse map
 const MORSE_MAP = {
@@ -1603,7 +1604,7 @@ const MorseKey = ({ size, iconSize, isPressing, pressIntensity = 0, glowSize, gl
 /* 离线「精选电台」曲库：抖音互动空间无后端，实时生成不可用，
    改为播放随包携带的预生成曲目（与 renderResult 的数据结构对齐）。
    音频文件随构建放在 dist 根目录 songs/ 下，使用相对路径。 */
-const OFFLINE_RADIO = [
+const FALLBACK_OFFLINE_RADIO = [
   {
     word: 'LOVE', sub: '把说不出口的爱，敲成一段旋律', style_label: '治愈钢琴',
     audio_url: 'songs/love.mp3', hook_key: 'C 大调五声', hook_bpm: 86.1,
@@ -1650,6 +1651,8 @@ const OFFLINE_RADIO = [
     ],
   },
 ];
+
+const OFFLINE_RADIO = GENERATED_OFFLINE_RADIO?.length ? GENERATED_OFFLINE_RADIO : FALLBACK_OFFLINE_RADIO;
 
 const FALLBACK_STYLES = [
   { id: 'healing',    label: '治愈'   },
