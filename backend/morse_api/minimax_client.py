@@ -181,12 +181,16 @@ def generate_instrumental_prompt_for_name(
     fallback_prompt: Optional[str] = None,
     with_vocals: bool = False,
     theme_cn: Optional[str] = None,
+    target_bpm: Optional[int] = None,
+    key_desc: Optional[str] = None,
 ) -> tuple[str, bool]:
     """
     先由文本模型根据「词语 + 风格」写出完整音乐生成提示词，供 music_generation 使用。
 
     Args:
         with_vocals: True 时产出「带人声」的编曲指令；False 时产出「纯器乐」指令。
+        target_bpm: 目标速度；写入提示词并作为后期节拍对齐的锚点。
+        key_desc: 目标调式描述（如「C 大调五声」）；写入提示词，供 hook 定调呼应。
 
     Returns:
         (prompt, used_llm) — 若 LLM 失败则 prompt 为 fallback_prompt 或默认模板。
@@ -214,13 +218,30 @@ def generate_instrumental_prompt_for_name(
             f"\n本曲在应用界面上的展示标题为「{theme_cn}」。撰写编曲提示词时，必须在正文里至少出现一次「{theme_cn}」四字，"
             f"并自然写出欢快小马、原野轻蹄、阳光草地等意象，与英文词 {abbrev} 的气质相呼应。\n"
         )
+    # 节拍/调式锚点：让 AI 成品在固定 BPM 与调式上，便于后期把「摩斯 hook」精确对齐并叠入
+    tempo_block = ""
+    if target_bpm:
+        tempo_block += (
+            f"\n【速度锚点】整曲必须稳定在约 {target_bpm} BPM 的 4/4 拍，节拍清晰、不要自由散板或频繁变速，"
+            "便于后期把一段固定节奏的动机精确对齐叠入。\n"
+        )
+    if key_desc:
+        tempo_block += (
+            f"【调式锚点】整曲主调为{key_desc}，主奏与和声围绕该调式展开，色彩统一。\n"
+        )
+    tempo_block += (
+        "【为记忆动机让路】编曲中要预留一条清晰、反复出现的短旋律「记忆动机(hook)」的空间："
+        "副歌/高潮处中低频不要过满、留出中高音区，让这条动机能清晰穿透；"
+        "主歌段落织体可更疏，动机会以更轻的音量若隐若现地贯穿全曲。\n"
+    )
     user = (
         f"用户为自己定制的「声音签名」输入了一个专属英文词（可能是名字、昵称或任意英文单词，已规范为大写字母）：{abbrev}\n"
         f"该词对应的摩斯电码（点划，字母间空格）：{morse_dot_dash}\n"
         f"可视化（点· 划−）：{morse_pretty}\n"
         f"用户选择的风格：{style_label}"
         f"{hint_block}"
-        f"{theme_block}\n"
+        f"{theme_block}"
+        f"{tempo_block}\n"
         "请根据这个词在中文文化语境中常见的气质、音节听感与情绪联想（不必逐字母解释摩斯），"
         "结合用户选择的风格，决定整首歌曲应有的：主奏与辅奏乐器组合、速度与律动松紧、"
         "情绪弧线（从略带神秘或私密的引子到更舒展的高潮再到余韵）、色彩和声与织体疏密。\n\n"
@@ -229,8 +250,9 @@ def generate_instrumental_prompt_for_name(
         "2. 风格必须严格贴合上方「风格锚点」，不要改变主风格；在其框架内服务于这个词的气质。\n"
         "3. 必须具体写出编曲层次（主奏乐器 + 铺底 + 节奏型），以及情绪如何递进；"
         "开头数小节和声清淡、留白感足，便于与前奏里「摩斯节奏型打击乐」叠化而不嘈杂。\n"
-        f"4. {voice_rule}\n"
-        "5. 避免空泛套话；篇幅约 280～900 个汉字，最长不要超过 1800 字。"
+        "4. 必须遵守上方【速度锚点】【调式锚点】【为记忆动机让路】的约束。\n"
+        f"5. {voice_rule}\n"
+        "6. 避免空泛套话；篇幅约 280～900 个汉字，最长不要超过 1800 字。"
     )
     try:
         raw = text_chat_completion_v2(cfg, api_key, system_prompt=system, user_prompt=user)

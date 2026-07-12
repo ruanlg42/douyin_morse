@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>点划之间 · 摩斯点唱机</title>
+<style>
+  :root{
+    --bg:#0b0a12; --bg2:#141019; --gold:#f2d27a; --gold2:#c9a24a; --gold-deep:#7a5b1f;
+    --text:#f4ecd8; --muted:#9a9488; --faint:#6b6658; --line:rgba(201,162,74,0.22);
+    --purple:#c4b5fd; --ok:#a7f3d0;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%; overflow:hidden;}
+  body{
+    background:radial-gradient(120% 90% at 50% -10%, #1a1426 0%, var(--bg) 55%, #070610 100%);
+    color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased; user-select:none;
+  }
+  #app{position:fixed; inset:0; display:flex; flex-direction:column;
+       max-width:520px; margin:0 auto; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);}
+  .screen{position:absolute; inset:0; display:flex; flex-direction:column;
+          opacity:0; visibility:hidden; pointer-events:none; transition:opacity .28s ease;}
+  .screen.active{opacity:1; visibility:visible; pointer-events:auto;}
+
+  /* ---------- 头部 ---------- */
+  .head{display:flex; align-items:center; justify-content:space-between; padding:16px 20px 6px;}
+  .brand{font-size:19px; font-weight:700; letter-spacing:.14em;
+         background:linear-gradient(135deg,var(--gold2),var(--gold)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+  .sub{font-size:11px; color:var(--muted); letter-spacing:.1em; padding:0 20px 10px;}
+  .icon-btn{width:36px; height:36px; border-radius:50%; border:1px solid var(--line);
+            background:rgba(255,255,255,.04); color:var(--gold); font-size:16px; line-height:34px; text-align:center;}
+
+  /* ---------- 首页歌单 ---------- */
+  .list{flex:1; overflow-y:auto; padding:6px 16px 20px; -webkit-overflow-scrolling:touch;}
+  .card{display:flex; align-items:center; gap:14px; padding:14px; margin-bottom:12px;
+        border-radius:18px; border:1px solid var(--line); background:rgba(20,16,25,.6);
+        transition:transform .12s ease, border-color .2s;}
+  .card:active{transform:scale(.98); border-color:rgba(242,210,122,.5);}
+  .cover{width:56px; height:56px; border-radius:14px; flex:none; position:relative; overflow:hidden;}
+  .cover span{position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+              font-size:22px; font-weight:800; color:rgba(0,0,0,.55); letter-spacing:.05em;}
+  .c-info{flex:1; min-width:0;}
+  .c-word{font-size:17px; font-weight:700; letter-spacing:.14em;}
+  .c-morse{font-family:ui-monospace,monospace; font-size:12px; color:var(--gold); letter-spacing:.12em; margin-top:3px;}
+  .c-sub{font-size:11px; color:var(--muted); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .c-play{width:34px;height:34px;flex:none;border-radius:50%;border:1px solid var(--line);color:var(--gold);font-size:14px;line-height:32px;text-align:center;}
+
+  .entry{margin:2px 16px 16px; padding:12px 14px; border-radius:16px;
+         border:1px solid rgba(167,139,250,.3); background:rgba(124,58,237,.09);
+         display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  .entry .t{font-size:13px; color:var(--purple); letter-spacing:.08em;}
+  .entry .d{font-size:10.5px; color:var(--faint); margin-top:3px;}
+  .mini-btn{flex:none; padding:8px 14px; border-radius:999px; font-size:12px; font-weight:600;
+            border:1px solid rgba(167,139,250,.5); background:rgba(167,139,250,.16); color:#ddd6fe;}
+
+  /* ---------- 播放页 ---------- */
+  .player{flex:1; display:flex; flex-direction:column; align-items:center; padding:8px 24px 24px;}
+  .disc{width:210px; height:210px; border-radius:50%; margin:14px 0 8px; position:relative;
+        box-shadow:0 12px 50px rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center;}
+  .disc::after{content:""; position:absolute; width:46px; height:46px; border-radius:50%;
+               background:var(--bg); border:2px solid rgba(0,0,0,.4);}
+  .disc.spin{animation:spin 8s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .p-word{font-size:30px; font-weight:800; letter-spacing:.24em; margin-top:10px;
+          background:linear-gradient(135deg,var(--gold2),var(--gold)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+  .p-sub{font-size:12px; color:var(--muted); margin-top:6px; text-align:center; line-height:1.6;}
+  .p-key{font-size:10.5px; color:var(--faint); margin-top:4px; letter-spacing:.1em;}
+
+  /* 摩斯点亮行 */
+  .morse-row{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin:18px 0 6px;}
+  .m-letter{display:flex; flex-direction:column; align-items:center; gap:4px; padding:4px 8px; border-radius:10px;
+            transition:background .18s, transform .18s;}
+  .m-letter.on{background:rgba(242,210,122,.14); transform:translateY(-2px);}
+  .m-char{font-size:14px; font-weight:700; color:var(--faint); transition:color .18s;}
+  .m-letter.on .m-char{color:var(--gold);}
+  .m-syms{display:flex; gap:3px;}
+  .m-dot,.m-dash{background:rgba(255,255,255,.18); border-radius:99px; transition:background .12s, box-shadow .12s;}
+  .m-dot{width:8px; height:8px;}
+  .m-dash{width:18px; height:8px;}
+  .m-dot.lit{background:var(--gold); box-shadow:0 0 8px var(--gold);}
+  .m-dash.lit{background:#7dd3fc; box-shadow:0 0 8px #7dd3fc;}
+
+  .p-ctrls{margin-top:auto; width:100%; display:flex; flex-direction:column; align-items:center; gap:14px;}
+  .bar{width:100%; height:5px; border-radius:99px; background:rgba(201,162,74,.16); overflow:hidden;}
+  .bar > i{display:block; height:100%; width:0; background:linear-gradient(90deg,var(--gold2),var(--gold));}
+  .time{display:flex; justify-content:space-between; width:100%; font-size:10.5px; color:var(--faint); font-variant-numeric:tabular-nums;}
+  .big-play{width:66px; height:66px; border-radius:50%; border:none; font-size:24px; color:#1a1a1a;
+            background:linear-gradient(135deg,var(--gold-deep),var(--gold2) 55%,var(--gold)); box-shadow:0 8px 30px rgba(217,201,163,.4);}
+
+  /* ---------- 解码弹层 ---------- */
+  .modal{position:absolute; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+         background:rgba(4,3,8,.72); opacity:0; visibility:hidden; pointer-events:none; transition:opacity .25s;}
+  .modal.active{opacity:1; visibility:visible; pointer-events:auto;}
+  .modal-card{width:86%; max-width:340px; border-radius:22px; padding:22px 20px;
+              background:linear-gradient(160deg,#1b1526,#120f1a); border:1px solid rgba(167,139,250,.34);
+              box-shadow:0 20px 60px rgba(0,0,0,.6);}
+  .modal-title{margin:0 0 4px; font-size:16px; letter-spacing:.08em; color:var(--purple);}
+  .modal-desc{margin:0 0 16px; font-size:11.5px; color:var(--muted); line-height:1.6;}
+  .code-in{width:100%; padding:12px 14px; border-radius:12px; font-family:ui-monospace,monospace;
+           font-size:15px; letter-spacing:.14em; text-align:center; text-transform:uppercase;
+           background:rgba(8,7,9,.6); border:1px solid rgba(167,139,250,.3); color:var(--text); outline:none;}
+  .code-msg{min-height:18px; font-size:11px; margin:8px 0 0; text-align:center;}
+  .modal-actions{display:flex; gap:10px; margin-top:16px;}
+  .modal-actions button{flex:1; padding:11px; border-radius:12px; font-size:13px; font-weight:600; border:none;}
+  .btn-primary{background:linear-gradient(135deg,#5b21b6,#7c3aed 55%,#a78bfa); color:#fff;}
+  .btn-ghost{background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.14); color:var(--muted);}
+  .reveal{margin-top:14px; text-align:center; opacity:0; transform:scale(.8); transition:opacity .4s, transform .4s;}
+  .reveal.show{opacity:1; transform:scale(1);}
+  .reveal .r-word{font-size:26px; font-weight:800; letter-spacing:.24em;
+                  background:linear-gradient(135deg,var(--gold2),var(--gold)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+  .reveal .r-morse{font-family:ui-monospace,monospace; font-size:12px; color:var(--gold); margin-top:6px; letter-spacing:.12em;}
+
+  .empty{flex:1; display:flex; align-items:center; justify-content:center; padding:0 30px;
+         text-align:center; color:var(--muted); font-size:13px; line-height:1.8;}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 首页 -->
+  <section id="screen-home" class="screen active">
+    <div class="head">
+      <div class="brand">点划之间</div>
+      <div class="icon-btn" id="btn-open-decode" role="button" aria-label="破译关卡码">🔓</div>
+    </div>
+    <div class="sub">把心事敲成摩斯 · 藏进一首专属旋律</div>
+    <div class="entry">
+      <div>
+        <div class="t">🔐 收到一串神秘代码？</div>
+        <div class="d">输入朋友分享的关卡码，解开 TA 藏进旋律里的词</div>
+      </div>
+      <button class="mini-btn" id="btn-decode2" type="button">破译</button>
+    </div>
+    <div class="list" id="song-list"></div>
+  </section>
+
+  <!-- 播放 -->
+  <section id="screen-player" class="screen">
+    <div class="head">
+      <div class="icon-btn" id="btn-back" role="button" aria-label="返回">‹</div>
+      <div class="brand" style="font-size:15px;">正在收听</div>
+      <div style="width:36px;"></div>
+    </div>
+    <div class="player">
+      <div class="disc" id="disc"></div>
+      <div class="p-word" id="p-word">—</div>
+      <div class="p-sub" id="p-sub"></div>
+      <div class="p-key" id="p-key"></div>
+      <div class="morse-row" id="morse-row"></div>
+      <div class="p-ctrls">
+        <button class="big-play" id="big-play" type="button" aria-label="播放">▶</button>
+        <div class="bar"><i id="bar-fill"></i></div>
+        <div class="time"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 解码弹层 -->
+  <div class="modal" id="modal-decode">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="decode-title">
+      <h2 class="modal-title" id="decode-title">🔓 破译关卡码</h2>
+      <p class="modal-desc">粘贴朋友分享的关卡码（形如 MC-XXXX-XX），解开 TA 藏在旋律里的词。</p>
+      <input class="code-in" id="code-input" placeholder="MC-XXXX-XX" autocomplete="off" autocapitalize="characters" />
+      <p class="code-msg" id="code-msg"></p>
+      <div class="reveal" id="reveal">
+        <div class="r-word" id="r-word"></div>
+        <div class="r-morse" id="r-morse"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" id="btn-close-decode" type="button">关闭</button>
+        <button class="btn-primary" id="btn-do-decode" type="button">解密</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="songs_manifest.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  /* ========== 摩斯表 + 关卡码解码（与主项目 jumpCode.js 对齐） ========== */
+  var MORSE = {A:".-",B:"-...",C:"-.-.",D:"-..",E:".",F:"..-.",G:"--.",H:"....",I:"..",J:".---",K:"-.-",L:".-..",M:"--",N:"-.",O:"---",P:".--.",Q:"--.-",R:".-.",S:"...",T:"-",U:"..-",V:"...-",W:".--",X:"-..-",Y:"-.--",Z:"--.."};
+  var ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  var VAL = {}; for (var i=0;i<ALPHABET.length;i++){ VAL[ALPHABET[i]] = i; }
+  var SALT = [11,23,5,17,29,3,19,13,25,7,31,15];
+  function rot(i){ return (SALT[i % SALT.length] + i*7) % 32; }
+  var MIN_LEN=2, MAX_LEN=8, PREFIX="MC";
+  function sanitize(raw){
+    var s = (raw||"").toUpperCase().trim();
+    s = s.replace(/O/g,"0").replace(/[IL]/g,"1").replace(/U/g,"V");
+    s = s.replace(/[^0-9A-Z]/g,"");
+    if (s.indexOf(PREFIX)===0) s = s.slice(PREFIX.length);
+    return s;
+  }
+  function decodeLevelCode(raw){
+    var body = sanitize(raw);
+    if (body.length < MIN_LEN+2) return {ok:false};
+    for (var k=0;k<body.length;k++){ if(!(body[k] in VAL)) return {ok:false}; }
+    var len = (VAL[body[0]] - rot(0) + 320) % 32;
+    if (len < MIN_LEN || len > MAX_LEN) return {ok:false};
+    if (body.length !== len+2) return {ok:false};
+    var sum = len, word = "";
+    for (var j=0;j<len;j++){
+      var v = (VAL[body[1+j]] - rot(j+1) + 320) % 32;
+      if (v > 25) return {ok:false};
+      sum += v; word += String.fromCharCode(65+v);
+    }
+    if (VAL[body[1+len]] !== sum % 32) return {ok:false};
+    return {ok:true, word:word};
+  }
+  function prettyMorse(code){ return (code||"").replace(/\./g,"·").replace(/-/g,"—"); }
+
+  /* ========== 主题配色（按词） ========== */
+  var THEMES = {
+    LOVE:{a:"#ff9bb0",b:"#ff5e7a"}, HOME:{a:"#ffd58a",b:"#e8a44a"},
+    STAR:{a:"#bde0ff",b:"#7db8ff"}, DREAM:{a:"#d9b8ff",b:"#a678ff"},
+    _def:{a:"#f2d27a",b:"#c9a24a"}
+  };
+  function themeOf(w){ return THEMES[w] || THEMES._def; }
+
+  /* ========== 状态 ========== */
+  var SONGS = (window.MORSE_SONGS || []);
+  var audio = new Audio();
+  audio.preload = "metadata";
+  var cur = null;              // 当前歌
+  var rafId = 0;
+
+  var $ = function(id){ return document.getElementById(id); };
+  function showScreen(id){
+    ["screen-home","screen-player"].forEach(function(s){
+      var el = $(s); if(!el) return;
+      if (s===id){ el.classList.add("active"); } else { el.classList.remove("active"); }
+    });
+  }
+  function fmt(t){ if(!isFinite(t)) t=0; var m=Math.floor(t/60), s=Math.floor(t%60); return m+":"+(s<10?"0":"")+s; }
+
+  /* ---------- 首页歌单渲染 ---------- */
+  function buildHome(){
+    var list = $("song-list");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!SONGS.length){
+      var e = document.createElement("div"); e.className="empty";
+      e.textContent = "示例曲目未就绪。请确认 songs_manifest.js 与 songs/ 音频已随包一同上传。";
+      list.appendChild(e); return;
+    }
+    SONGS.forEach(function(song, idx){
+      var th = themeOf(song.word);
+      var card = document.createElement("div"); card.className="card"; card.setAttribute("role","button");
+      var cover = document.createElement("div"); cover.className="cover";
+      cover.style.background = "linear-gradient(135deg,"+th.a+","+th.b+")";
+      var cv = document.createElement("span"); cv.textContent = song.word.slice(0,2); cover.appendChild(cv);
+      var info = document.createElement("div"); info.className="c-info";
+      var w = document.createElement("div"); w.className="c-word"; w.textContent = song.word;
+      var m = document.createElement("div"); m.className="c-morse"; m.textContent = song.morse_pretty || wordToPretty(song.word);
+      var sub = document.createElement("div"); sub.className="c-sub"; sub.textContent = (song.style_label? song.style_label+" · ":"") + (song.sub||"");
+      info.appendChild(w); info.appendChild(m); info.appendChild(sub);
+      var pl = document.createElement("div"); pl.className="c-play"; pl.textContent="▶";
+      card.appendChild(cover); card.appendChild(info); card.appendChild(pl);
+      card.addEventListener("click", function(){ openPlayer(idx); });
+      list.appendChild(card);
+    });
+  }
+  function wordToPretty(w){
+    return w.split("").map(function(c){ return prettyMorse(MORSE[c]||""); }).join(" ");
+  }
+
+  /* ---------- 摩斯点亮行 ---------- */
+  var letterEls = [];   // [{wrap, char, syms:[{el,type}], startMs, endMs}]
+  var timelineDurMs = 0;
+  function buildMorseRow(song){
+    var row = $("morse-row");
+    while (row.firstChild) row.removeChild(row.firstChild);
+    letterEls = [];
+    var tl = song.letter_timeline || [];
+    // 若无 timeline，则用词本身按等分构造一个
+    if (!tl.length){
+      tl = song.word.split("").map(function(c,i){
+        return {letter:c, morse:MORSE[c]||"", start_ms:i*700, end_ms:i*700+500};
+      });
+    }
+    timelineDurMs = 0;
+    tl.forEach(function(item){
+      var code = item.morse || MORSE[item.letter] || "";
+      var wrap = document.createElement("div"); wrap.className="m-letter";
+      var ch = document.createElement("div"); ch.className="m-char"; ch.textContent = item.letter || "";
+      var syms = document.createElement("div"); syms.className="m-syms";
+      var symEls = [];
+      code.split("").forEach(function(s){
+        var d = document.createElement("div");
+        d.className = (s===".") ? "m-dot" : "m-dash";
+        syms.appendChild(d); symEls.push({el:d, dot:s==="."});
+      });
+      wrap.appendChild(ch); wrap.appendChild(syms); row.appendChild(wrap);
+      letterEls.push({wrap:wrap, symEls:symEls, startMs:item.start_ms||0, endMs:item.end_ms||0});
+      if ((item.end_ms||0) > timelineDurMs) timelineDurMs = item.end_ms||0;
+    });
+    if (timelineDurMs <= 0) timelineDurMs = song.word.length*700;
+  }
+
+  function updateMorseLighting(){
+    if (!letterEls.length) return;
+    // 用歌曲进度在时间轴上循环，做“心跳式”点亮；只点亮当前字母，避免整屏常亮
+    var posMs = (audio.currentTime*1000) % (timelineDurMs + 800);
+    for (var i=0;i<letterEls.length;i++){
+      var L = letterEls[i];
+      var on = posMs >= L.startMs && posMs <= L.endMs;
+      if (on) L.wrap.classList.add("on"); else L.wrap.classList.remove("on");
+      var frac = (on && L.endMs > L.startMs) ? (posMs - L.startMs) / (L.endMs - L.startMs) : 0;
+      var litN = on ? Math.ceil(frac * L.symEls.length) : 0;
+      for (var j=0;j<L.symEls.length;j++){
+        if (j < litN) L.symEls[j].el.classList.add("lit");
+        else L.symEls[j].el.classList.remove("lit");
+      }
+    }
+  }
+
+  function loop(){
+    if (!audio.paused){
+      var dur = audio.duration||0, ct=audio.currentTime||0;
+      $("bar-fill").style.width = (dur? (ct/dur*100):0)+"%";
+      $("t-cur").textContent = fmt(ct);
+      $("t-dur").textContent = fmt(dur);
+      updateMorseLighting();
+    }
+    rafId = requestAnimationFrame(loop);
+  }
+
+  /* ---------- 打开播放页 ---------- */
+  function openPlayer(idx){
+    cur = SONGS[idx]; if(!cur) return;
+    var th = themeOf(cur.word);
+    $("p-word").textContent = cur.word;
+    $("p-sub").textContent = cur.sub || "";
+    $("p-key").textContent = (cur.hook_key? "调式 "+cur.hook_key : "") + (cur.hook_bpm? "  ·  "+Math.round(cur.hook_bpm)+" BPM":"");
+    var disc = $("disc");
+    disc.style.background = "radial-gradient(circle at 32% 30%, "+th.a+", "+th.b+" 70%, #1a1320)";
+    buildMorseRow(cur);
+    $("bar-fill").style.width="0%"; $("t-cur").textContent="0:00"; $("t-dur").textContent="0:00";
+    setPlayIcon(false);
+    audio.src = cur.file;
+    audio.load();
+    showScreen("screen-player");
+  }
+  function setPlayIcon(playing){
+    $("big-play").textContent = playing ? "⏸" : "▶";
+    var disc = $("disc");
+    if (playing) disc.classList.add("spin"); else disc.classList.remove("spin");
+  }
+
+  function togglePlay(){
+    if (!cur) return;
+    if (audio.paused){
+      var p = audio.play();
+      if (p && p.catch) p.catch(function(){});
+      setPlayIcon(true);
+    } else {
+      audio.pause(); setPlayIcon(false);
+    }
+  }
+
+  /* ---------- 解码弹层 ---------- */
+  function openDecode(){
+    $("code-input").value = "";
+    $("code-msg").textContent = "";
+    $("reveal").classList.remove("show");
+    $("modal-decode").classList.add("active");
+    setTimeout(function(){ try{ $("code-input").focus(); }catch(e){} }, 120);
+  }
+  function closeDecode(){ $("modal-decode").classList.remove("active"); }
+  function doDecode(){
+    var res = decodeLevelCode($("code-input").value);
+    var msg = $("code-msg"), rv = $("reveal");
+    if (!res.ok){
+      rv.classList.remove("show");
+      msg.style.color = "#fca5a5";
+      msg.textContent = "关卡码无效，请检查后重试";
+      if (navigator.vibrate) try{ navigator.vibrate([10,30,10]); }catch(e){}
+      return;
+    }
+    msg.style.color = "var(--ok)";
+    msg.textContent = "解密成功 · TA 藏起来的是";
+    $("r-word").textContent = res.word;
+    $("r-morse").textContent = wordToPretty(res.word);
+    rv.classList.add("show");
+    if (navigator.vibrate) try{ navigator.vibrate(12); }catch(e){}
+  }
+
+  /* ---------- 事件绑定 ---------- */
+  function bind(){
+    $("btn-open-decode").addEventListener("click", openDecode);
+    $("btn-decode2").addEventListener("click", openDecode);
+    $("btn-close-decode").addEventListener("click", closeDecode);
+    $("btn-do-decode").addEventListener("click", doDecode);
+    $("code-input").addEventListener("keydown", function(e){ if(e.key==="Enter") doDecode(); });
+    $("modal-decode").addEventListener("click", function(e){ if(e.target===$("modal-decode")) closeDecode(); });
+    $("btn-back").addEventListener("click", function(){
+      audio.pause(); setPlayIcon(false); showScreen("screen-home");
+    });
+    $("big-play").addEventListener("click", togglePlay);
+    audio.addEventListener("ended", function(){ setPlayIcon(false); $("bar-fill").style.width="100%"; });
+    audio.addEventListener("loadedmetadata", function(){ $("t-dur").textContent = fmt(audio.duration); });
+  }
+
+  function init(){
+    buildHome();
+    bind();
+    loop();
+  }
+
+  window.addEventListener("load", function(){
+    try { init(); }
+    catch(err){
+      var fb = document.createElement("div");
+      fb.style.cssText="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0a12;color:#f4ecd8;font-size:16px;padding:24px;text-align:center;z-index:9999;";
+      fb.textContent="哎呀，出了点问题，请重新打开试试~";
+      while(document.body.firstChild) document.body.removeChild(document.body.firstChild);
+      document.body.appendChild(fb);
+    }
+  });
+})();
+</script>
+</body>
+</html>

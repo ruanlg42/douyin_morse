@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "interative_content_mcp": {
+      "url": "https://vcreate.douyin.com/mgplatform/api/apps/interact_content/mcp",
+      "oauth": {}
+    }
+  }
+}

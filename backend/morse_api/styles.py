@@ -24,6 +24,11 @@ class StyleSpec:
     fallback_prompt: str
     drum_overlay_db: float = -10.0
     bpm_hint: Optional[int] = None
+    # hook 动机的调式/音色：root 音名、scale（见 drum_synth.SCALES）、timbre、八度
+    key_root: str = "A"
+    key_scale: str = "minor_pent"
+    hook_timbre: str = "pluck"
+    hook_octave: int = 4
 
 
 STYLES: dict[str, StyleSpec] = {
@@ -42,6 +47,7 @@ STYLES: dict[str, StyleSpec] = {
             "情绪渐进自然，整体简约干净、有专属感。全曲纯器乐，不要任何人声。"
         ),
         drum_overlay_db=-14.0,
+        key_root="C", key_scale="major_pent", hook_timbre="piano", hook_octave=5,
     ),
     "cinematic": StyleSpec(
         id="cinematic",
@@ -58,6 +64,7 @@ STYLES: dict[str, StyleSpec] = {
             "全曲纯器乐，不要任何人声。"
         ),
         drum_overlay_db=-12.0,
+        key_root="D", key_scale="minor", hook_timbre="bell", hook_octave=5,
     ),
     "lofi": StyleSpec(
         id="lofi",
@@ -91,6 +98,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-16.0,
         bpm_hint=128,
+        key_root="E", key_scale="major_pent", hook_timbre="pluck", hook_octave=5,
     ),
     "synthwave": StyleSpec(
         id="synthwave",
@@ -200,6 +208,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-14.0,
         bpm_hint=82,
+        key_root="D", key_scale="minor_pent", hook_timbre="pluck", hook_octave=4,
     ),
     "dream_pop": StyleSpec(
         id="dream_pop",
@@ -216,6 +225,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-15.0,
         bpm_hint=98,
+        key_root="A", key_scale="major_pent", hook_timbre="bell", hook_octave=5,
     ),
 }
 

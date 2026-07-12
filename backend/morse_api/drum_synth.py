@@ -608,3 +608,169 @@ def render_drum_reference(
         return wav_fallback
 
 
+# =========================================================
+# 音高化摩斯 hook：把点划映射为「调式内的旋律动机」，贯穿全曲
+# 目标：像碟中谍那样有记忆点、能哼出来，而不只是无音高鼓点
+# =========================================================
+
+_NOTE_SEMITONES: dict[str, int] = {
+    "C": 0, "C#": 1, "DB": 1, "D": 2, "D#": 3, "EB": 3, "E": 4,
+    "F": 5, "F#": 6, "GB": 6, "G": 7, "G#": 8, "AB": 8, "A": 9,
+    "A#": 10, "BB": 10, "B": 11,
+}
+
+# 音阶（相对根音的半音偏移）；hook 用五声/小调更「东方/电影」，major 更明亮
+SCALES: dict[str, list[int]] = {
+    "minor": [0, 2, 3, 5, 7, 8, 10],
+    "major": [0, 2, 4, 5, 7, 9, 11],
+    "minor_pent": [0, 3, 5, 7, 10],
+    "major_pent": [0, 2, 4, 7, 9],
+    "dorian": [0, 2, 3, 5, 7, 9, 10],
+}
+
+
+def _note_freq(root_note: str = "A", octave: int = 4, semitone_offset: int = 0) -> float:
+    """根音名 + 八度 + 半音偏移 → 频率(Hz)。A4=440。"""
+    base = _NOTE_SEMITONES.get(root_note.upper(), 9)
+    midi = 12 * (octave + 1) + base + semitone_offset
+    return 440.0 * (2.0 ** ((midi - 69) / 12.0))
+
+
+def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str = "pluck") -> np.ndarray:
+    """带音高的乐音：快速起音 + 指数衰减 + 少量泛音，听感像音乐盒/拨弦/铃。"""
+    n = max(1, int(duration_sec * sr))
+    t = np.arange(n, dtype=np.float64) / sr
+    attack = np.clip(t / 0.006, 0.0, 1.0)
+    if timbre == "bell":
+        decay = np.exp(-t * 3.0)
+        tone = (
+            np.sin(2 * np.pi * freq * t)
+            + 0.5 * np.sin(2 * np.pi * freq * 2.01 * t)
+            + 0.25 * np.sin(2 * np.pi * freq * 3.86 * t)
+        )
+    elif timbre == "piano":
+        decay = np.exp(-t * 4.2)
+        tone = (
+            np.sin(2 * np.pi * freq * t)
+            + 0.45 * np.sin(2 * np.pi * freq * 2 * t)
+            + 0.2 * np.sin(2 * np.pi * freq * 3 * t)
+            + 0.08 * np.sin(2 * np.pi * freq * 4 * t)
+        )
+    else:  # pluck / music-box
+        decay = np.exp(-t * 6.0)
+        tone = (
+            np.sin(2 * np.pi * freq * t)
+            + 0.35 * np.sin(2 * np.pi * freq * 2 * t)
+            + 0.12 * np.sin(2 * np.pi * freq * 3 * t)
+        )
+    x = (attack * decay * tone).astype(np.float32)
+    return _norm(x, 0.8)
+
+
+def build_morse_hook(
+    morse_dot_dash: str,
+    bpm: float,
+    sr: int,
+    *,
+    root: str = "A",
+    scale: str = "minor_pent",
+    octave: int = 4,
+    dash_ratio: float = 2.0,
+    timbre: str = "pluck",
+) -> tuple[np.ndarray, list[dict], int]:
+    """
+    把「空格分字母」的摩斯串合成为调式内的旋律动机（mono float32）。
+
+    设计：
+    - 点(·) = 八分音符短音，沿音阶级进上行（chattering 感）；
+    - 划(−) = dash_ratio 倍时长的长音，落在和弦音(根/三/五)上（锚定感）；
+    - 每个字母开头把旋律指针复位到根音，形成可辨识的结构；
+    - 字母之间留半个八分的呼吸。
+
+    Returns:
+        (waveform, note_timeline, total_ms)
+        note_timeline 条目：{"letter":"", "morse": token, "freq": hz,
+                             "start_ms": float, "end_ms": float, "is_dash": bool}
+    """
+    scale_steps = SCALES.get(scale, SCALES["minor_pent"])
+    beat = 60.0 / max(1.0, float(bpm))
+    dt_dot = beat / 2.0  # 八分音符
+    dt_dash = dt_dot * max(1.0, float(dash_ratio))
+
+    tokens = morse_dot_dash.split()
+    placed: list[tuple[int, np.ndarray]] = []  # (start_sample, wave)
+    note_timeline: list[dict] = []
+    cursor = 0.0  # 秒
+
+    for ti, token in enumerate(tokens):
+        idx = 0  # 每字母复位到根音
+        for sym in token:
+            if sym == ".":
+                deg = scale_steps[idx % len(scale_steps)]
+                dur = dt_dot
+                is_dash = False
+            elif sym == "-":
+                chord_idx = [0, 2, 4][idx % 3]
+                deg = scale_steps[chord_idx % len(scale_steps)]
+                dur = dt_dash
+                is_dash = True
+            else:
+                continue
+            freq = _note_freq(root, octave, deg)
+            wave = _synth_hook_note(freq, dur, sr, timbre=timbre)
+            start_sample = int(round(cursor * sr))
+            placed.append((start_sample, wave))
+            note_timeline.append(
+                {
+                    "letter": "",
+                    "morse": token,
+                    "freq": round(freq, 2),
+                    "start_ms": round(cursor * 1000.0, 1),
+                    "end_ms": round((cursor + dur) * 1000.0, 1),
+                    "is_dash": is_dash,
+                }
+            )
+            cursor += dur
+            idx += 1
+        if ti < len(tokens) - 1:
+            cursor += dt_dot * 0.5  # 字母间呼吸
+
+    total_sec = cursor if cursor > 0 else dt_dot
+    total_samples = int(round(total_sec * sr))
+    buf = np.zeros(total_samples + sr // 10, dtype=np.float32)  # 末尾余量给尾音
+    for start_sample, wave in placed:
+        end = start_sample + wave.shape[0]
+        if end > buf.shape[0]:
+            wave = wave[: buf.shape[0] - start_sample]
+            end = buf.shape[0]
+        buf[start_sample:end] += wave
+    buf = normalize_peak(buf, headroom_db=2.0)
+    total_ms = int(round(total_sec * 1000.0))
+    return buf, note_timeline, total_ms
+
+
+def render_morse_hook_with_timeline(
+    morse_dot_dash: str,
+    cfg: DemoConfig,
+    *,
+    root: str = "A",
+    scale: str = "minor_pent",
+    octave: int = 4,
+    dash_ratio: float = 2.0,
+    timbre: str = "pluck",
+    bpm: Optional[float] = None,
+) -> tuple[np.ndarray, list[dict], int]:
+    """便捷封装：用给定 BPM（默认 cfg.bpm）合成一遍 hook 动机，返回浮点波形。"""
+    use_bpm = float(bpm) if bpm else float(cfg.bpm)
+    return build_morse_hook(
+        morse_dot_dash,
+        use_bpm,
+        cfg.sample_rate,
+        root=root,
+        scale=scale,
+        octave=octave,
+        dash_ratio=dash_ratio,
+        timbre=timbre,
+    )
+
+

@@ -6,3 +6,5 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 # pydub 混音解码 MP3 需要 ffmpeg/ffprobe；系统未装时用自带二进制的 static-ffmpeg 兜底
 static-ffmpeg>=2.5
+# 节拍/音高探测（后期把摩斯 hook 对齐到 AI 成品的真实节拍网格）；缺失时后端自动回退
+librosa>=0.10.0

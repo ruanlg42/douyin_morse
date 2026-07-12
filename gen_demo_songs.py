@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""
+预生成互动空间离线包所需的示例歌曲。
+- 调用本地后端 /api/generate（同步）生成带摩斯 hook 的歌
+- 把成品转码为 mono 96k 小体积 mp3，写入 interactive_space/morse_jukebox/songs/
+- 收集 letter_timeline / morse / hook_bpm 等，产出 manifest.json 供 H5 驱动逐字母点亮
+"""
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+import shutil
+
+# 让 pydub/ffmpeg 可用（转码用）
+try:
+    import static_ffmpeg  # type: ignore
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
+
+FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
+API = "http://127.0.0.1:8765"
+ROOT = Path(__file__).resolve().parent
+OUT = ROOT / "interactive_space" / "morse_jukebox" / "songs"
+OUT.mkdir(parents=True, exist_ok=True)
+
+# (词, 风格id, 展示副标题)
+JOBS = [
+    ("LOVE",  "healing",       "把说不出口的爱，敲成一段旋律"),
+    ("HOME",  "folk_acoustic", "无论多远，心里都有回家的节拍"),
+    ("STAR",  "dream_pop",     "许一个愿，让它藏进星海的和弦"),
+    ("DREAM", "cinematic",     "所有未完成的梦，都在这段电波里"),
+]
+
+
+def _post(path: str, body: dict) -> dict:
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        API + path, data=data,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=320) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def _download(url: str, dest: Path) -> None:
+    full = url if url.startswith("http") else API + url
+    with urllib.request.urlopen(full, timeout=120) as r:
+        dest.write_bytes(r.read())
+
+
+def _transcode(src: Path, dst: Path) -> None:
+    # mono 44.1k 96kbps，压体积；歌已在后端裁到 60s
+    subprocess.run(
+        [FFMPEG, "-y", "-i", str(src), "-ac", "1", "-ar", "44100",
+         "-b:a", "96k", str(dst)],
+        check=True, capture_output=True,
+    )
+
+
+def main() -> None:
+    manifest = []
+    for word, style, sub in JOBS:
+        print(f"[gen] {word} / {style} ...", flush=True)
+        t0 = time.time()
+        res = _post("/api/generate", {"word": word, "style": style, "with_vocals": False})
+        if not res.get("audio_url"):
+            print(f"  !! 失败：{res}", file=sys.stderr)
+            sys.exit(1)
+        raw = OUT / f"_{word.lower()}_raw.mp3"
+        final = OUT / f"{word.lower()}.mp3"
+        _download(res["audio_url"], raw)
+        _transcode(raw, final)
+        raw.unlink(missing_ok=True)
+        size_kb = final.stat().st_size // 1024
+        print(f"  ok {size_kb}KB  bpm={res.get('hook_bpm')} key={res.get('hook_key')}  {time.time()-t0:.0f}s", flush=True)
+        manifest.append({
+            "word": word,
+            "sub": sub,
+            "style_label": res.get("style_label", style),
+            "morse_pretty": res.get("morse_pretty", ""),
+            "file": f"songs/{word.lower()}.mp3",
+            "hook_key": res.get("hook_key", ""),
+            "hook_bpm": res.get("hook_bpm", 0),
+            "letter_timeline": res.get("letter_timeline", []),
+            "intro_duration_ms": res.get("intro_duration_ms", 0),
+        })
+    pkg = ROOT / "interactive_space" / "morse_jukebox"
+    (pkg / "songs_manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    # H5 直接以 <script> 读取，避免 file:// 下 fetch 被 CORS 拦截
+    js = "window.MORSE_SONGS = " + json.dumps(manifest, ensure_ascii=False) + ";\n"
+    (pkg / "songs_manifest.js").write_text(js, encoding="utf-8")
+    print(f"\n[done] {len(manifest)} songs; manifest(.json/.js) written.")
+
+
+if __name__ == "__main__":
+    main()

@@ -1599,6 +1599,58 @@ const MorseKey = ({ size, iconSize, isPressing, pressIntensity = 0, glowSize, gl
 /* =========================================================
    MusicScreen — 声印生成
    ========================================================= */
+
+/* 离线「精选电台」曲库：抖音互动空间无后端，实时生成不可用，
+   改为播放随包携带的预生成曲目（与 renderResult 的数据结构对齐）。
+   音频文件随构建放在 dist 根目录 songs/ 下，使用相对路径。 */
+const OFFLINE_RADIO = [
+  {
+    word: 'LOVE', sub: '把说不出口的爱，敲成一段旋律', style_label: '治愈钢琴',
+    audio_url: 'songs/love.mp3', hook_key: 'C 大调五声', hook_bpm: 86.1,
+    morse_pretty: '·−·· −−− ···− ·', intro_duration_ms: 6000, intro_anim_delay_ms: 0, demo: false,
+    letter_timeline: [
+      { letter: 'L', morse: '.-..', morse_pretty: '·−··', start_ms: 0.0,    end_ms: 1249.9, dot_effect: 'bloom', dash_effect: 'pluck' },
+      { letter: 'O', morse: '---',  morse_pretty: '−−−',  start_ms: 1624.9, end_ms: 3374.9, dot_effect: 'bloom', dash_effect: 'pluck' },
+      { letter: 'V', morse: '...-', morse_pretty: '···−', start_ms: 3749.9, end_ms: 4999.8, dot_effect: 'bloom', dash_effect: 'pluck' },
+      { letter: 'E', morse: '.',    morse_pretty: '·',    start_ms: 5374.8, end_ms: 5499.8, dot_effect: 'bloom', dash_effect: 'pluck' },
+    ],
+  },
+  {
+    word: 'HOME', sub: '无论多远，心里都有回家的节拍', style_label: '民谣原声',
+    audio_url: 'songs/home.mp3', hook_key: 'A 小调五声', hook_bpm: 123.0,
+    morse_pretty: '···· −−− −− ·', intro_duration_ms: 7200, intro_anim_delay_ms: 0, demo: false,
+    letter_timeline: [
+      { letter: 'H', morse: '....', morse_pretty: '····', start_ms: 0.0,    end_ms: 1050.0, dot_effect: 'crisp', dash_effect: 'pluck' },
+      { letter: 'O', morse: '---',  morse_pretty: '−−−',  start_ms: 1500.0, end_ms: 3600.0, dot_effect: 'crisp', dash_effect: 'pluck' },
+      { letter: 'M', morse: '--',   morse_pretty: '−−',   start_ms: 4050.0, end_ms: 5400.0, dot_effect: 'crisp', dash_effect: 'pluck' },
+      { letter: 'E', morse: '.',    morse_pretty: '·',    start_ms: 5849.9, end_ms: 5999.9, dot_effect: 'crisp', dash_effect: 'pluck' },
+    ],
+  },
+  {
+    word: 'STAR', sub: '许一个愿，让它藏进星海的和弦', style_label: '梦境迷幻',
+    audio_url: 'songs/star.mp3', hook_key: 'A 大调五声', hook_bpm: 68.0,
+    morse_pretty: '··· − ·− ·−·', intro_duration_ms: 4898, intro_anim_delay_ms: 0, demo: false,
+    letter_timeline: [
+      { letter: 'S', morse: '...', morse_pretty: '···', start_ms: 0.0,    end_ms: 765.3,  dot_effect: 'bloom', dash_effect: 'hit' },
+      { letter: 'T', morse: '-',   morse_pretty: '−',   start_ms: 1224.5, end_ms: 1836.7, dot_effect: 'bloom', dash_effect: 'hit' },
+      { letter: 'A', morse: '.-',  morse_pretty: '·−',  start_ms: 2295.9, end_ms: 3214.3, dot_effect: 'bloom', dash_effect: 'hit' },
+      { letter: 'R', morse: '.-.', morse_pretty: '·−·', start_ms: 3673.5, end_ms: 4898.0, dot_effect: 'bloom', dash_effect: 'hit' },
+    ],
+  },
+  {
+    word: 'DREAM', sub: '所有未完成的梦，都在这段电波里', style_label: '电影叙事',
+    audio_url: 'songs/dream.mp3', hook_key: 'D 小调', hook_bpm: 117.5,
+    morse_pretty: '−·· ·−· · ·− −−', intro_duration_ms: 6000, intro_anim_delay_ms: 0, demo: false,
+    letter_timeline: [
+      { letter: 'D', morse: '-..', morse_pretty: '−··', start_ms: 0.0,    end_ms: 1000.0, dot_effect: 'hit', dash_effect: 'hit' },
+      { letter: 'R', morse: '.-.', morse_pretty: '·−·', start_ms: 1374.9, end_ms: 2374.9, dot_effect: 'hit', dash_effect: 'hit' },
+      { letter: 'E', morse: '.',   morse_pretty: '·',   start_ms: 2749.9, end_ms: 2874.9, dot_effect: 'hit', dash_effect: 'hit' },
+      { letter: 'A', morse: '.-',  morse_pretty: '·−',  start_ms: 3249.9, end_ms: 3999.8, dot_effect: 'hit', dash_effect: 'hit' },
+      { letter: 'M', morse: '--',  morse_pretty: '−−',  start_ms: 4374.8, end_ms: 5499.8, dot_effect: 'hit', dash_effect: 'hit' },
+    ],
+  },
+];
+
 const FALLBACK_STYLES = [
   { id: 'healing',    label: '治愈'   },
   { id: 'electronic', label: '电子'  },
@@ -1620,6 +1672,11 @@ const MusicScreen = ({ isActive = true }) => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [status, setStatus] = useState('');
   const [statusKind, setStatusKind] = useState('');
+  const [genProgress, setGenProgress] = useState(0);      // 异步生成进度 0-100
+  const [genStage, setGenStage] = useState('');           // 当前阶段中文标签
+  const genPollRef = useRef(null);                        // 轮询定时器
+  const previewRef = useRef(null);                        // Web Audio 即时预览上下文
+  const [previewPlaying, setPreviewPlaying] = useState(false);
   const [result, setResult] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [introMs, setIntroMs] = useState(0);
@@ -1647,10 +1704,18 @@ const MusicScreen = ({ isActive = true }) => {
   const isSeekingRef = useRef(false);
 
   useEffect(() => {
+    if (__OFFLINE__) return; // 离线包无后端，保留本地默认风格
     fetch(apiUrl('/api/styles'))
       .then(r => r.json())
       .then(data => { if (data.styles?.length) setStyles(data.styles); })
       .catch(() => { /* 保留本地默认风格 */ });
+  }, []);
+
+  // 卸载时清理轮询与预览音频
+  useEffect(() => () => {
+    if (genPollRef.current) clearInterval(genPollRef.current);
+    const p = previewRef.current;
+    if (p) { try { p.ctx.close(); } catch (_) {} }
   }, []);
 
   const startTicker = useCallback(() => {
@@ -1734,6 +1799,13 @@ const MusicScreen = ({ isActive = true }) => {
   const loadDemo = async () => {
     if (isGenerating) return;
     haptic(6);
+    if (__OFFLINE__) {
+      // 离线包无 /api/demo，也不携带碟中谍原声；改播电台里的电影叙事曲
+      const track = OFFLINE_RADIO.find(t => t.word === 'DREAM') || OFFLINE_RADIO[0];
+      renderResult(track);
+      setStatus(''); setStatusKind('');
+      return;
+    }
     setIsGenerating(true);
     setStatus('加载示例中'); setStatusKind('loading');
     try {
@@ -1759,11 +1831,124 @@ const MusicScreen = ({ isActive = true }) => {
     }
   };
 
+  // 离线电台：点击曲目直接播放随包携带的预生成 mp3
+  const playRadioTrack = (track) => {
+    haptic(6);
+    stopPreview();
+    setStatus(''); setStatusKind('');
+    renderResult(track);
+  };
+
+  // ===== 摩斯 hook 即时预览（Web Audio，零延迟，不依赖后端）=====
+  // 与后端 drum_synth.build_morse_hook 的音高映射保持一致
+  const HOOK_SCALES = {
+    minor: [0, 2, 3, 5, 7, 8, 10], major: [0, 2, 4, 5, 7, 9, 11],
+    minor_pent: [0, 3, 5, 7, 10], major_pent: [0, 2, 4, 7, 9],
+    dorian: [0, 2, 3, 5, 7, 9, 10],
+  };
+  const NOTE_SEMI = { C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11 };
+  // 各风格调式/音色（与后端 styles.py 对齐；缺省 A 小调五声）
+  const STYLE_KEY = {
+    healing:{root:'C',scale:'major_pent',oct:5}, cinematic:{root:'D',scale:'minor',oct:5},
+    retro8bit:{root:'E',scale:'major_pent',oct:5}, oriental:{root:'D',scale:'minor_pent',oct:4},
+    dream_pop:{root:'A',scale:'major_pent',oct:5},
+  };
+  const noteFreq = (root, oct, semi) => {
+    const base = NOTE_SEMI[root] ?? 9;
+    const midi = 12 * (oct + 1) + base + semi;
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  };
+
+  const stopPreview = () => {
+    const p = previewRef.current;
+    if (p) {
+      try { p.stopFns.forEach(fn => fn()); } catch (_) {}
+      try { p.ctx.close(); } catch (_) {}
+      previewRef.current = null;
+    }
+    setPreviewPlaying(false);
+  };
+
+  const playPreview = () => {
+    const w = word.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (w.length < 1) { setStatus('请先输入 1–10 个字母'); setStatusKind('err'); return; }
+    stopPreview();
+    if (isPlaying && audioRef.current) { try { audioRef.current.pause(); } catch (_) {} }
+
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = new AC();
+    const key = STYLE_KEY[selectedStyle] || { root: 'A', scale: 'minor_pent', oct: 4 };
+    const scale = HOOK_SCALES[key.scale] || HOOK_SCALES.minor_pent;
+    const bpm = (styles.find(s => s.id === selectedStyle)?.bpm_hint) || 100;
+    const beat = 60 / bpm;
+    const dtDot = beat / 2;
+    const dtDash = dtDot * 2;
+
+    const tokens = w.split('').map(ch => MORSE_MAP[ch] || '');
+    let t = ctx.currentTime + 0.08;
+    const stopFns = [];
+    tokens.forEach((tok, ti) => {
+      let idx = 0;
+      for (const sym of tok) {
+        const isDash = sym === '-';
+        const deg = isDash ? scale[[0,2,4][idx % 3] % scale.length] : scale[idx % scale.length];
+        const dur = isDash ? dtDash : dtDot;
+        const freq = noteFreq(key.root, key.oct, deg);
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = key.scale.includes('pent') ? 'triangle' : 'sine';
+        osc.frequency.value = freq;
+        const a = 0.006, d = dur * (isDash ? 0.9 : 0.8);
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.22, t + a);
+        gain.gain.exponentialRampToValueAtTime(0.0008, t + a + d);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + dur + 0.05);
+        stopFns.push(() => { try { osc.stop(); } catch (_) {} });
+        t += dur;
+        idx += 1;
+      }
+      if (ti < tokens.length - 1) t += dtDot * 0.5;
+    });
+    const totalMs = (t - ctx.currentTime) * 1000;
+    previewRef.current = { ctx, stopFns };
+    setPreviewPlaying(true);
+    setTimeout(() => { if (previewRef.current?.ctx === ctx) stopPreview(); }, totalMs + 400);
+  };
+
+  const humanizeGenError = (raw) => {
+    const s = String(raw || '');
+    if (/仅支持英文字母|仅字母|A-Z|长度/.test(s)) return '请输入 1–10 个英文字母（A–Z）';
+    if (/填写单词|word/i.test(s)) return '请先输入你的词';
+    if (/限流|1002/.test(s)) return '用的人有点多，稍后再试';
+    if (/余额|1008/.test(s)) return '服务暂时不可用';
+    if (/敏感|违规|1026/.test(s)) return '换一个词试试吧';
+    return '暂时没能生成，请稍后再试';
+  };
+
+  const stopGenPoll = () => {
+    if (genPollRef.current) { clearInterval(genPollRef.current); genPollRef.current = null; }
+  };
+
   const handleGenerate = () => {
     if (!word.trim()) { setStatus('请先输入单词'); setStatusKind('err'); return; }
     if (isGenerating) return;
     haptic(10);
+    stopPreview();
+
+    if (__OFFLINE__) {
+      // 互动空间离线包无后端，不做实时生成；用本地 Web Audio 试听摩斯动机替代，
+      // 并引导到「精选电台」体验完整成曲。
+      playPreview();
+      setStatus('离线体验版：已为你试听摩斯动机，完整成曲请到下方「精选电台」聆听'); setStatusKind('loading');
+      return;
+    }
+
     setIsGenerating(true);
+    setGenProgress(3);
+    setGenStage('排队中');
     setStatus('正在为你谱曲'); setStatusKind('loading');
     setResult(null);
     stopTicker();
@@ -1775,26 +1960,55 @@ const MusicScreen = ({ isActive = true }) => {
     setCurDashEff(null);
     setIsPlaying(false);
 
-    fetch(apiUrl('/api/generate'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word: word.trim(), style: selectedStyle, with_vocals: withVocals }),
+    const onDone = (data) => {
+      stopGenPoll();
+      renderResult(data);
+      setIsGenerating(false); setStatus(''); setStatusKind('');
+      setGenProgress(100); setGenStage('');
+    };
+    const onFail = (raw) => {
+      stopGenPoll();
+      setStatus(humanizeGenError(raw)); setStatusKind('err');
+      setIsGenerating(false); setGenProgress(0); setGenStage('');
+    };
+
+    const body = JSON.stringify({ word: word.trim(), style: selectedStyle, with_vocals: withVocals });
+
+    // 优先走异步：立即拿 task_id，再轮询进度；后端不支持时回退同步接口
+    fetch(apiUrl('/api/generate/start'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
     })
-      .then(r => r.json().catch(() => ({})))
-      .then(data => {
-        if (!data.audio_url) throw new Error(data.detail || '生成失败');
-        renderResult(data);
-        setIsGenerating(false); setStatus(''); setStatusKind('');
+      .then(async (r) => {
+        if (r.status === 404) throw new Error('__NO_ASYNC__');
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.task_id) throw new Error(d.detail || '生成失败');
+        return d.task_id;
       })
-      .catch(e => {
-        let msg = '暂时没能生成，请稍后再试';
-        const raw = String(e.message || '');
-        if (/仅支持英文字母|仅字母|A-Z|长度/.test(raw)) msg = '请输入 1–10 个英文字母（A–Z）';
-        else if (/填写单词|word/i.test(raw)) msg = '请先输入你的词';
-        else if (/限流|1002/.test(raw)) msg = '用的人有点多，稍后再试';
-        else if (/余额|1008/.test(raw)) msg = '服务暂时不可用';
-        else if (/敏感|违规|1026/.test(raw)) msg = '换一个词试试吧';
-        setStatus(msg); setStatusKind('err'); setIsGenerating(false);
+      .then((taskId) => {
+        genPollRef.current = setInterval(() => {
+          fetch(apiUrl(`/api/generate/status/${taskId}`))
+            .then(r => r.json().catch(() => ({})))
+            .then(st => {
+              if (typeof st.progress === 'number') setGenProgress(st.progress);
+              if (st.stage_label) setGenStage(st.stage_label);
+              if (st.status === 'done' && st.result) onDone(st.result);
+              else if (st.status === 'error') onFail(st.error);
+            })
+            .catch(() => { /* 单次轮询失败忽略，等下次 */ });
+        }, 1000);
+      })
+      .catch((e) => {
+        if (String(e.message) === '__NO_ASYNC__') {
+          // 回退：老的同步接口
+          fetch(apiUrl('/api/generate'), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+          })
+            .then(r => r.json().catch(() => ({})))
+            .then(data => { if (!data.audio_url) throw new Error(data.detail || '生成失败'); onDone(data); })
+            .catch(err => onFail(err.message));
+          return;
+        }
+        onFail(e.message);
       });
   };
 
@@ -1876,7 +2090,10 @@ const MusicScreen = ({ isActive = true }) => {
   // 词组模式（如 demo 的 "Mission: Impossible"）：短语斜体小字 + 首字母放大 + 按 hero_idx 高亮
   const isPhraseMode = !!displayPhrase;
   // 示例曲用电影原声海报；用户生成曲用 Morsomatic 唱片插画（与 /api/demo 返回的 demo 字段对齐）
-  const albumArtSrc = result?.demo ? '/img/mission-impossible-poster.png' : '/img/album-cover.png';
+  // 用 BASE_URL 前缀，兼容离线包的相对 base（'./'）
+  const assetBase = import.meta.env.BASE_URL || '/';
+  const albumArtSrc = (result?.demo ? 'img/mission-impossible-poster.png' : 'img/album-cover.png');
+  const albumArtSrcFull = assetBase + albumArtSrc;
   const albumArtAlt = result?.demo ? 'Mission: Impossible 电影原声封面' : '声印 · 唱片封面';
   const phraseChars = isPhraseMode ? displayPhrase.split('') : [];
   const heroSet = isPhraseMode
@@ -1910,16 +2127,26 @@ const MusicScreen = ({ isActive = true }) => {
       const url = rawUrl.startsWith('http')
         ? rawUrl
         : apiUrl(rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`);
-      const res = await fetch(url);
-      const blob = await res.blob();
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
       const name = (result.word || 'morse').toLowerCase().replace(/\s+/g, '_');
-      a.download = `${name}_morse.mp3`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
+      if (__OFFLINE__) {
+        // 离线包内音频为同源相对路径，直接锚点下载，避免 fetch/blob
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name}_morse.mp3`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `${name}_morse.mp3`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+      }
     } catch (_) {}
     setIsDownloading(false);
     setShowSongMenu(false);
@@ -2121,6 +2348,43 @@ const MusicScreen = ({ isActive = true }) => {
           </button>
         </div>
 
+        {/* 精选电台（离线包）：播放随包携带的预生成成曲，弥补无后端实时生成 */}
+        {__OFFLINE__ && (
+          <div>
+            <label className="text-[9.5px] block mb-1 tracking-[0.24em] uppercase font-medium" style={{ color: 'var(--text-muted)' }}>
+              精选电台 · 点击即听完整成曲
+            </label>
+            <div className="flex flex-col gap-2">
+              {OFFLINE_RADIO.map((t) => (
+                <button
+                  key={t.word}
+                  type="button"
+                  onClick={() => playRadioTrack(t)}
+                  className="btn-tactile w-full flex items-center gap-3 px-3 py-2 rounded-2xl text-left transition-all"
+                  style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)' }}
+                >
+                  <span
+                    className="flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center text-[13px] font-bold"
+                    style={{ background: 'linear-gradient(135deg,var(--gold-600),var(--gold-300))', color: '#1a1206', letterSpacing: '0.02em' }}
+                  >
+                    {t.word.slice(0, 2)}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-baseline gap-2">
+                      <span className="text-[14px] font-bold tracking-[0.12em]" style={{ color: 'var(--text)' }}>{t.word}</span>
+                      <span className="font-mono text-[11px]" style={{ color: 'var(--gold-300)', letterSpacing: '0.1em' }}>{t.morse_pretty}</span>
+                    </span>
+                    <span className="block text-[10.5px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>
+                      {t.style_label} · {t.sub}
+                    </span>
+                  </span>
+                  <span className="flex-shrink-0 text-[13px]" style={{ color: 'var(--gold-300)' }}>▶</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Word input */}
         <div>
           <label className="text-[9.5px] block mb-1 tracking-[0.24em] uppercase font-medium" style={{ color: 'var(--text-muted)' }}>
@@ -2265,7 +2529,7 @@ const MusicScreen = ({ isActive = true }) => {
                 className="inline-block w-3 h-3 rounded-full border-2"
                 style={{ borderColor: 'rgba(26,26,26,0.35)', borderTopColor: '#1a1a1a', animation: 'spin 0.8s linear infinite' }}
               />
-              <span>生成中…</span>
+              <span>{genStage ? `${genStage}…` : '生成中…'}</span>
               <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
             </>
           ) : (
@@ -2275,6 +2539,38 @@ const MusicScreen = ({ isActive = true }) => {
             </>
           )}
         </button>
+
+        {/* 生成进度条（异步任务）：让用户看到 编码→动机→编曲→AI→对齐混音 的阶段推进 */}
+        {isGenerating && (
+          <div className="w-full" role="progressbar" aria-valuenow={genProgress} aria-valuemin={0} aria-valuemax={100}>
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(201,162,74,0.15)' }}>
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${Math.max(3, genProgress)}%`,
+                  background: 'linear-gradient(90deg,#C9A24A,#F2D27A)',
+                  transition: 'width 0.5s ease',
+                }}
+              />
+            </div>
+            <p className="text-center text-[10px] mt-1 tracking-wide" style={{ color: 'var(--text-muted)' }}>
+              {genProgress}% · {genStage || '处理中'}
+            </p>
+          </div>
+        )}
+
+        {/* 试听摩斯动机（零延迟 Web Audio 预览，不消耗生成额度）：先听旋律再决定生成 */}
+        {!isGenerating && (
+          <button
+            type="button"
+            onClick={() => (previewPlaying ? stopPreview() : playPreview())}
+            disabled={!word.trim()}
+            className="btn-tactile w-full py-2 rounded-full text-[12px] tracking-[0.14em] flex items-center justify-center gap-2 disabled:opacity-40"
+            style={{ background: 'rgba(201,162,74,0.10)', border: '1px solid rgba(201,162,74,0.30)', color: 'var(--gold-100)' }}
+          >
+            {previewPlaying ? '■ 停止试听' : '▶ 试听摩斯动机（免生成）'}
+          </button>
+        )}
 
         {/* Status */}
         {status && (
@@ -2351,7 +2647,7 @@ const MusicScreen = ({ isActive = true }) => {
                   }}
                 >
                   <img
-                    src={albumArtSrc}
+                    src={albumArtSrcFull}
                     alt={albumArtAlt}
                     className="w-full h-full object-cover"
                     style={{ transition: 'transform 0.6s ease', transform: isPlaying ? 'scale(1.05)' : 'scale(1)' }}
@@ -2669,7 +2965,7 @@ const MusicScreen = ({ isActive = true }) => {
                  style={{ borderBottom: '1px solid var(--border-subtle)' }}>
               <div className="w-10 h-10 rounded-xl overflow-hidden flex-shrink-0"
                    style={{ border: '1px solid rgba(201,162,74,0.3)' }}>
-                <img src={result.demo ? '/img/mission-impossible-poster.png' : '/img/album-cover.png'}
+                <img src={albumArtSrcFull}
                      alt="" className="w-full h-full object-cover" />
               </div>
               <div className="min-w-0">

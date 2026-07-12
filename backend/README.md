@@ -21,13 +21,4 @@ python -m morse_api
 - `/media/*` — 生成结果 MP3  
 - `/assets/*` — 示例等静态文件  
 
-## 命令行流水线（可选）
-
-与 Web 共用同一套模块：
-
-```bash
-cd backend
-python -m morse_api.run_demo --abbrev Lucas
-```
-
 算法与 MiniMax 细节见 `MUSIC_PIPELINE.md`。

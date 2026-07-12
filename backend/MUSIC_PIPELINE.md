@@ -9,16 +9,15 @@
    - 环境变量：`export MINIMAX_API_KEY="你的密钥"`  
    - 或在 `backend/morse_api/key.json`（格式见下文「7. API Key 配置」）
 3. **MP3 导出（推荐）**：系统需安装 `ffmpeg` 并在 `PATH` 中；未安装时鼓点会降级为 WAV，MiniMax 仍可接受。
-4. **运行**（需有效 Key 与网络；将 `Lucas` 换成 10 个字母以内的英文缩写）：
+4. **运行**（需有效 Key 与网络；将 `love` 换成 10 个字母以内的英文缩写）：
 
 ```bash
 cd /path/to/repo/backend
-python -m morse_api.run_demo --abbrev Lucas
+python -m morse_api
+# 再 POST /api/generate（body: word / style / with_vocals），详见「8. 运行命令」
 ```
 
-5. **结果位置**：默认写入 `outputs/`，例如 `lucas_<YYYYMMDD_HHMMSS>_morse_drum.mp3`（鼓点参考）与同名时间戳的 `_morse_music.mp3`（Cover 成品）。
-
-**常用参数**：只生成摩斯 + 鼓点、不调 API：`--skip-api`；生成后不自动播放：`--no-play`；更详细日志：`--verbose`。更多示例见下文「8. 运行命令」。
+5. **结果位置**：默认写入 `outputs/`，接口返回 `audio_url`（`/media/<文件名>.mp3`）。
 
 ---
 
@@ -45,8 +44,6 @@ python -m morse_api.run_demo --abbrev Lucas
 | `key_loader.py` | 从 `key.json` 解析 Bearer Token（支持 `group_id` 拼接等常见写法） |
 | `minimax_client.py` | `POST /v1/music_generation`，`audio_base64` 上传，`output_format=hex` 解码 |
 | `main.py` | FastAPI：`/api/*`、`/media`、`/assets` |
-| `player.py` | macOS `afplay` / Windows `start` / Linux `xdg-open` 简单播放 |
-| `run_demo.py` | CLI 入口，串联全流程与日志 |
 
 ## 3. 摩斯编码规则
 
