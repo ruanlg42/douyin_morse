@@ -685,6 +685,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         rot: 0,
         squash: 0,
         wingOpen: 0,
+        wingBurst: 0,
         flapPhase: 0,
         landingEase: 0,
         landOffset: 0,        // 落地吸附缓冲（世界单位，>0 表示仍在落点线上方）
@@ -1119,7 +1120,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     };
     s.character.landed = false;
     s.character.squash = 0;
-    s.character.wingOpen = 0.12;
+    s.character.wingOpen = Math.max(s.character.wingOpen || 0, 0.58);
+    s.character.wingBurst = 0.18;
     s.character.pose = 'rise';
     s.character.landingEase = 0;
     s.character.landOffset = 0;
@@ -1280,9 +1282,10 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       s.character.blink = Math.max(0, s.character.blink - dt * 6);
     }
 
-    // 翅膀展收 + 姿态（上升收翼 / 下落张翼滑翔 / 着陆收翼）
+    // 翅膀展收 + 姿态：起跳一拍扑开 → 上升半开借力 → 下落宽翼滑翔 → 着陆收翼
     let wingTarget = 0;
     let pose = 'idle';
+    const wingBurstK = Math.max(0, Math.min(1, (s.character.wingBurst || 0) / 0.18));
     if (s.hold) {
       pose = 'charge';
       wingTarget = 0.06 + (s.smoothCharge ?? 0) * 0.1;
@@ -1290,7 +1293,9 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       if (s.jump.phase === 'rise') {
         pose = 'rise';
         const k = Math.min(1, s.jump.t / Math.max(0.001, s.jump.T));
-        wingTarget = 0.1 + k * 0.22;
+        const liftOpen = 0.50 + Math.sin(k * Math.PI) * 0.10 + k * 0.12;
+        const burstOpen = 0.76 + wingBurstK * 0.16;
+        wingTarget = Math.max(liftOpen, wingBurstK > 0 ? burstOpen : 0);
       } else {
         pose = 'glide';
         const peak = s.jump.peakAlt ?? s.character.alt;
@@ -1307,6 +1312,9 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       wingTarget = Math.max(0, 0.5 * (s.character.landingEase / 0.34));
     }
     s.character.pose = pose;
+    if (s.character.wingBurst > 0) {
+      s.character.wingBurst = Math.max(0, s.character.wingBurst - dt);
+    }
 
     if (s.character.landingEase > 0) {
       s.character.landingEase = Math.max(0, s.character.landingEase - dt);
@@ -1325,10 +1333,10 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       }
     }
 
-    const wingLerp = pose === 'glide' ? 16 : pose === 'land' ? 20 : 11;
+    const wingLerp = wingBurstK > 0 ? 30 : pose === 'glide' ? 16 : pose === 'land' ? 20 : pose === 'rise' ? 14 : 11;
     s.character.wingOpen += (wingTarget - s.character.wingOpen) * Math.min(1, dt * wingLerp);
     s.character.flapPhase += dt * (
-      pose === 'glide' ? 24 : pose === 'rise' ? 14 : pose === 'tumble' ? 7 : 3
+      wingBurstK > 0 ? 34 : pose === 'glide' ? 24 : pose === 'rise' ? 16 : pose === 'tumble' ? 7 : 3
     );
 
     // 升空：先上升 → 再重力下落，途中可滑接任意对齐的云
@@ -3764,6 +3772,7 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
   const ch = OWL_H * (1 - squash * 0.36);
   const wingOpen = Math.max(0, Math.min(1, c.wingOpen || 0));
   const pose = c.pose || 'idle';
+  const isRise = pose === 'rise';
   const isGlide = pose === 'glide' || pose === 'tumble';
   const isLand = pose === 'land';
   const flap = Math.sin(c.flapPhase || 0);
@@ -3780,8 +3789,8 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
   ctx.fill();
 
   if (wingOpen > 0.04) {
-    const ws  = cw * (isGlide ? 0.62 + wingOpen * 1.05 : 0.50 + wingOpen * 0.94);
-    const wy  = isGlide ? flap * 2.2 : flap * (4 + wingOpen * 9);
+    const ws  = cw * (isGlide ? 0.62 + wingOpen * 1.05 : isRise ? 0.62 + wingOpen * 1.12 : 0.50 + wingOpen * 0.94);
+    const wy  = isGlide ? flap * 2.2 : isRise ? flap * (5 + wingOpen * 7) : flap * (4 + wingOpen * 9);
 
     const drawWing = (sign) => {
       const rootX = sign * cw * 0.38;
@@ -3789,6 +3798,8 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
       const tipX  = sign * ws;
       const tipY  = isGlide
         ? -ch * (0.38 + wingOpen * 0.08) + wy
+        : isRise
+        ? -ch * (0.62 + wingOpen * 0.22) + wy
         : -ch * (0.50 + wingOpen * 0.14) + wy;
 
       ctx.beginPath();
@@ -3803,6 +3814,17 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
           sign * ws * 0.78, -ch * 0.08 + wy * 0.3,
           sign * ws * 0.38, -ch * 0.04 + wy * 0.2,
           sign * cw * 0.40, -ch * 0.28,
+        );
+      } else if (isRise) {
+        ctx.bezierCurveTo(
+          sign * ws * 0.32, -ch * (0.82 + wingOpen * 0.14) + wy * 0.55,
+          sign * ws * 0.80, -ch * (0.80 + wingOpen * 0.10) + wy,
+          tipX, tipY,
+        );
+        ctx.bezierCurveTo(
+          sign * ws * 0.86, -ch * (0.30 + wingOpen * 0.10) + wy * 0.35,
+          sign * ws * 0.42, -ch * 0.08 + wy * 0.18,
+          sign * cw * 0.40, -ch * 0.26,
         );
       } else {
         ctx.bezierCurveTo(
@@ -3832,11 +3854,25 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
       ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(rootX, rootY);
-      ctx.bezierCurveTo(
-        sign * ws * 0.50, -ch * (0.72 + wingOpen * 0.17) + wy,
-        sign * ws * 0.85, -ch * (0.60 + wingOpen * 0.11) + wy,
-        tipX, tipY,
-      );
+      if (isGlide) {
+        ctx.bezierCurveTo(
+          sign * ws * 0.42, -ch * (0.48 + wingOpen * 0.06) + wy,
+          sign * ws * 0.92, -ch * (0.40 + wingOpen * 0.04) + wy,
+          tipX, tipY,
+        );
+      } else if (isRise) {
+        ctx.bezierCurveTo(
+          sign * ws * 0.32, -ch * (0.82 + wingOpen * 0.14) + wy * 0.55,
+          sign * ws * 0.80, -ch * (0.80 + wingOpen * 0.10) + wy,
+          tipX, tipY,
+        );
+      } else {
+        ctx.bezierCurveTo(
+          sign * ws * 0.50, -ch * (0.72 + wingOpen * 0.17) + wy,
+          sign * ws * 0.85, -ch * (0.60 + wingOpen * 0.11) + wy,
+          tipX, tipY,
+        );
+      }
       ctx.stroke();
 
       // ── 次羽纹（2条，增加层次感）──
