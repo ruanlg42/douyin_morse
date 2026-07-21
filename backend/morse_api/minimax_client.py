@@ -13,6 +13,7 @@ import binascii
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -183,6 +184,7 @@ def generate_instrumental_prompt_for_name(
     theme_cn: Optional[str] = None,
     target_bpm: Optional[int] = None,
     key_desc: Optional[str] = None,
+    hook_kind: str = "melodic",
 ) -> tuple[str, bool]:
     """
     先由文本模型根据「词语 + 风格」写出完整音乐生成提示词，供 music_generation 使用。
@@ -191,6 +193,10 @@ def generate_instrumental_prompt_for_name(
         with_vocals: True 时产出「带人声」的编曲指令；False 时产出「纯器乐」指令。
         target_bpm: 目标速度；写入提示词并作为后期节拍对齐的锚点。
         key_desc: 目标调式描述（如「C 大调五声」）；写入提示词，供 hook 定调呼应。
+        hook_kind: 摩斯动机的形态，决定 AI 编曲要为它「让」出的空间：
+            - "melodic"（旋律，钢琴/铃等）：让出中高音区，让旋律线穿透；
+            - "percussive"（节奏，真实架子鼓）：编曲自身鼓组要克制稀疏，
+              把强拍与底鼓/军鼓的节奏骨架位置让给摩斯鼓点，低频不要挤占。
 
     Returns:
         (prompt, used_llm) — 若 LLM 失败则 prompt 为 fallback_prompt 或默认模板。
@@ -229,11 +235,32 @@ def generate_instrumental_prompt_for_name(
         tempo_block += (
             f"【调式锚点】整曲主调为{key_desc}，主奏与和声围绕该调式展开，色彩统一。\n"
         )
-    tempo_block += (
-        "【为记忆动机让路】编曲中要预留一条清晰、反复出现的短旋律「记忆动机(hook)」的空间："
-        "副歌/高潮处中低频不要过满、留出中高音区，让这条动机能清晰穿透；"
-        "主歌段落织体可更疏，动机会以更轻的音量若隐若现地贯穿全曲。\n"
-    )
+    # 「让路」段落随摩斯动机的形态切换：旋律动机让中高音区；节奏动机让节奏骨架与低频
+    if hook_kind == "percussive":
+        tempo_block += (
+            "【为节奏动机让路】后期会在本曲上叠入一条真实「架子鼓」演奏的固定节奏动机(hook)，"
+            "它承担强拍与骨架律动。因此本曲自身的鼓组/打击乐必须克制、稀疏、留白，"
+            "不要写密集连打的底鼓与军鼓；把每小节强拍(第1、3拍)与低频冲击的位置留空，让叠入的鼓点动机成为节奏主心骨；"
+            "低频(底鼓/低音)不要过满，给外来鼓点的底鼓留出冲击空间；"
+            "主歌织体更疏、副歌也以旋律与和声推进为主，避免与外来鼓点抢节奏。\n"
+        )
+    else:
+        tempo_block += (
+            "【为旋律动机让路】后期会叠入一条清晰、反复出现的短「旋律」记忆动机(hook)。"
+            "副歌/高潮处中低频不要过满、留出中高音区，让这条旋律能清晰穿透；"
+            "主歌段落织体可更疏，动机会以更轻的音量若隐若现地贯穿全曲。\n"
+        )
+    # 第 3、4 点措辞随动机形态切换：旋律→与旋律叠化；节奏→给外来鼓点留骨架
+    if hook_kind == "percussive":
+        layer_rule = (
+            "开头数小节自身鼓组留白、强拍留空，便于与前奏进入的「摩斯架子鼓节奏动机」严丝合缝地咬合而不打架。"
+        )
+        constraint_names = "【速度锚点】【调式锚点】【为节奏动机让路】"
+    else:
+        layer_rule = (
+            "开头数小节和声清淡、留白感足，便于与前奏里「摩斯旋律动机」叠化而不嘈杂。"
+        )
+        constraint_names = "【速度锚点】【调式锚点】【为旋律动机让路】"
     user = (
         f"用户为自己定制的「声音签名」输入了一个专属英文词（可能是名字、昵称或任意英文单词，已规范为大写字母）：{abbrev}\n"
         f"该词对应的摩斯电码（点划，字母间空格）：{morse_dot_dash}\n"
@@ -249,8 +276,8 @@ def generate_instrumental_prompt_for_name(
         "1. 只输出一段可直接交给「音乐生成模型」的中文提示词正文；不要标题、不要 Markdown、不要编号列表、不要用引号整段包裹。\n"
         "2. 风格必须严格贴合上方「风格锚点」，不要改变主风格；在其框架内服务于这个词的气质。\n"
         "3. 必须具体写出编曲层次（主奏乐器 + 铺底 + 节奏型），以及情绪如何递进；"
-        "开头数小节和声清淡、留白感足，便于与前奏里「摩斯节奏型打击乐」叠化而不嘈杂。\n"
-        "4. 必须遵守上方【速度锚点】【调式锚点】【为记忆动机让路】的约束。\n"
+        f"{layer_rule}\n"
+        f"4. 必须遵守上方{constraint_names}的约束。\n"
         f"5. {voice_rule}\n"
         "6. 避免空泛套话；篇幅约 280～900 个汉字，最长不要超过 1800 字。"
     )
@@ -295,18 +322,17 @@ def generate_lyrics_for_name(
         "你是资深中文流行音乐词作人，擅长为短词或名字写出情感饱满、便于 AI 演唱的中文流行歌词。"
         "你只输出歌词本体，不输出任何解释。"
     )
-    hint_block = f"风格关键词：{style_hint}\n" if style_hint else ""
+    hint_block = f"参考风格氛围（仅用于把握情绪，切勿把风格名写进歌词）：{style_hint}\n" if style_hint else ""
     user = (
-        f"为一首「{style_label}」风格的歌曲写一段中文歌词。\n"
-        f"核心意象是用户的专属英文词：{abbrev}（可以作为对方的名字、暗号或信物反复出现，也可轻轻嵌入行末）。\n"
+        f"请为一首歌写一段中文歌词，情绪贴合「{style_label}」的氛围。\n"
+        f"核心意象是英文词 {abbrev}：把它当作对方的名字或暗号，在副歌里自然反复出现。\n"
         f"{hint_block}\n"
-        "输出格式要求：\n"
-        "1. 使用 [Intro]、[Verse]、[Chorus]、[Bridge]、[Outro] 小节标签，至少包含一个 Verse 和一个 Chorus；段落标签单独成行。\n"
-        "2. 每行歌词不超过 18 个汉字；整体字数控制在 280–800 字之间。\n"
-        "3. 仅输出纯歌词文本；不要 Markdown、不要编号、不要引号包裹、不要解释。\n"
-        "4. 主体中文，可少量英文单词点缀（例如 {abbrev} 本身）。\n"
-        "5. 情绪与指定风格契合；避免政治、敏感、低俗或露骨表达。\n"
-        "6. 不要出现「人声」「伴奏」「编曲」等元描述。"
+        "严格输出格式：\n"
+        "1. 用段落标签 [Verse]、[Chorus]、[Bridge]，每个标签单独占一行；至少一个 Verse、一个 Chorus。\n"
+        "2. 每句歌词单独成行，一行一句，一行不超过 14 个汉字；总行数 12–20 行。\n"
+        "3. 具象、有画面感，避免口号式空话；不要把「治愈/钢琴/风格/旋律/音符」等音乐术语直接写进歌词。\n"
+        "4. 仅输出纯歌词与段落标签；不要编号、不要标点堆砌、不要引号包裹、不要任何解释。\n"
+        f"5. 主体中文，副歌可点缀英文词 {abbrev} 本身。"
     )
     try:
         raw = text_chat_completion_v2(cfg, api_key, system_prompt=system, user_prompt=user)
@@ -316,6 +342,19 @@ def generate_lyrics_for_name(
         cleaned = re.sub(r"\s*```\s*$", "", cleaned)
         if cleaned.startswith(('"', "「", "“")) and cleaned.endswith(('"', "」", "”")):
             cleaned = cleaned[1:-1].strip()
+        # 去掉模型爱加的结尾解释/注释行（如「（注：全词12行…）」「注：」「说明：」），避免被当歌词演唱
+        lines = []
+        for ln in cleaned.splitlines():
+            s = ln.strip()
+            if re.match(r"^[（(]?\s*(注|说明|备注|Note)\s*[:：]", s):
+                break  # 从解释行起截断，后面通常都是元描述
+            lines.append(ln)
+        cleaned = "\n".join(lines).strip()
+        # 去掉行内残留的整行括号说明（独占一行的 （...） ）
+        cleaned = "\n".join(
+            ln for ln in cleaned.splitlines()
+            if not re.match(r"^\s*[（(].*[）)]\s*$", ln.strip()) or "[" in ln
+        ).strip()
         if len(cleaned) < 40:
             raise ValueError(f"歌词过短（{len(cleaned)} 字）")
         if len(cleaned) > 3500:
@@ -347,42 +386,35 @@ def _normalize_api_key_for_http_header(api_key: str) -> str:
     return s
 
 
-def music_cover_from_reference_file(
+def generate_music(
     cfg: DemoConfig,
     api_key: str,
-    reference_audio_path: Path,
-    prompt: str,
-) -> bytes:
-    """读取本地参考音频 → base64 → 调用 music-cover，返回生成音频二进制。"""
-    ref_bytes = reference_audio_path.read_bytes()
-    b64 = base64.b64encode(ref_bytes).decode("ascii")
-    return music_cover_from_base64(cfg, api_key, b64, prompt)
-
-
-def music_cover_from_base64(
-    cfg: DemoConfig,
-    api_key: str,
-    audio_base64: str,
     prompt: str,
     lyrics: Optional[str] = None,
 ) -> bytes:
-    """生成音乐（music-2.6-free 模型）。
-    
+    """文生曲（music-3.0）。路线 A：AI 出编曲 f，后续在本地把摩斯 x 叠回成品。
+
     Args:
-        lyrics: 如果提供，则生成带人声的歌曲；如果为 None，则生成纯音乐。
+        prompt: 音乐风格/情绪/BPM/调式描述（1–2000 字符）。
+        lyrics: 提供则生成带人声演唱；为 None 则纯器乐 (is_instrumental=true)。
+    Returns:
+        音频二进制（mp3）。
+    行为：
+        - 首连易遇 TLS/Connection reset 抖动，按 cfg.music_retries 重试（探针已验证重试后必成）。
+        - output_format=hex → 解码 data.audio；output_format=url → 下载 data.audio 指向的直链。
     """
     if not (1 <= len(prompt) <= 2000):
-        raise ValueError(f"music-2.6-free 的 prompt 长度需在 1–2000 字符之间（当前 {len(prompt)}）。")
+        raise ValueError(f"music prompt 长度需在 1–2000 字符之间（当前 {len(prompt)}）。")
 
     api_key = _normalize_api_key_for_http_header(api_key)
 
     url = f"{cfg.api_base.rstrip('/')}{cfg.music_endpoint}"
     if not url.isascii():
         raise ValueError("API 地址含非 ASCII 字符，请检查 MINIMAX_API_BASE / config.api_base。")
-    
-    # music-2.6-free: 文本生成音乐
+
+    # music-3.0：文本生成音乐（无歌词=纯器乐）
     body: dict[str, Any] = {
-        "model": cfg.cover_model,
+        "model": cfg.music_model,
         "prompt": prompt,
         "output_format": cfg.output_format,
         "audio_setting": {
@@ -390,40 +422,49 @@ def music_cover_from_base64(
             "bitrate": cfg.output_bitrate,
             "format": cfg.output_audio_format,
         },
-        "is_instrumental": lyrics is None,  # 无歌词时生成纯音乐
+        "is_instrumental": lyrics is None,
     }
-    
-    # 如果提供歌词，添加到请求
     if lyrics:
         if not (1 <= len(lyrics) <= 3500):
             raise ValueError(f"歌词长度需在 1–3500 字符之间（当前 {len(lyrics)}）。")
         body["lyrics"] = lyrics
 
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=payload,
-        headers={
-            "Content-Type": "application/json; charset=utf-8",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
 
-    logger.info("POST %s model=%s", url, cfg.cover_model)
-    try:
-        with urllib.request.urlopen(req, timeout=cfg.request_timeout_sec) as resp:
-            text = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
-        logger.error("HTTP %s: %s", e.code, detail[:2000])
-        raise MiniMaxAPIError(
-            f"HTTP {e.code} 请求失败：{detail}",
-            status_code=e.code,
-            raw=detail,
-        ) from e
-    except urllib.error.URLError as e:
-        raise MiniMaxAPIError(f"网络错误：{e}") from e
+    # 带重试的请求：仅对网络类错误重试，HTTP/业务错误立即抛出
+    text = ""
+    attempts = max(1, int(cfg.music_retries) + 1)
+    for i in range(attempts):
+        req = urllib.request.Request(
+            url=url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        logger.info("POST %s model=%s (第 %d/%d 次)", url, cfg.music_model, i + 1, attempts)
+        try:
+            with urllib.request.urlopen(req, timeout=cfg.request_timeout_sec) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            logger.error("HTTP %s: %s", e.code, detail[:2000])
+            raise MiniMaxAPIError(
+                f"HTTP {e.code} 请求失败：{detail}",
+                status_code=e.code,
+                raw=detail,
+            ) from e
+        except (urllib.error.URLError, ConnectionResetError, TimeoutError, OSError) as e:
+            logger.warning("音乐请求网络抖动（第 %d/%d 次）：%s", i + 1, attempts, e)
+            if i < attempts - 1:
+                # 指数退避：2s→4s→8s→16s→32s（上限 32s），熬过 MiniMax 首连/短时抖动
+                backoff = min(32.0, 2.0 * (2 ** i))
+                time.sleep(backoff)
+                continue
+            raise MiniMaxAPIError(f"网络错误（重试 {attempts} 次仍失败）：{e}") from e
 
     try:
         result = json.loads(text)
@@ -446,24 +487,42 @@ def music_cover_from_base64(
 
     data = result.get("data") or {}
     gen_status = data.get("status")
-    audio_hex = data.get("audio")
+    audio_field = data.get("audio")
 
-    if gen_status == 1 and not audio_hex:
-        raise MiniMaxAPIError(
-            "音乐仍在生成中（data.status=1）。当前接口未提供轮询 task_id，请稍后重试同一请求或联系官方文档。",
-            raw=result,
-        )
+    if not audio_field:
+        if gen_status == 1:
+            raise MiniMaxAPIError(
+                "音乐仍在生成中（data.status=1）。当前接口未提供轮询 task_id，请稍后重试同一请求。",
+                raw=result,
+            )
+        raise MiniMaxAPIError("响应中缺少 data.audio。完整响应已记录在日志。", raw=result)
 
-    if not audio_hex:
-        raise MiniMaxAPIError(
-            "响应中缺少 data.audio（hex）。完整响应已记录在日志。",
-            raw=result,
-        )
+    audio_field = audio_field.strip()
 
+    # output_format=url：data.audio 是可下载直链
+    if cfg.output_format == "url" or audio_field.startswith("http"):
+        try:
+            with urllib.request.urlopen(audio_field, timeout=cfg.request_timeout_sec) as r:
+                return r.read()
+        except Exception as e:  # noqa: BLE001
+            raise MiniMaxAPIError(f"下载 data.audio(url) 失败：{e}", raw=result) from e
+
+    # output_format=hex：解码十六进制
     try:
-        return binascii.unhexlify(audio_hex.strip())
+        return binascii.unhexlify(audio_field)
     except binascii.Error as e:
         raise MiniMaxAPIError(f"data.audio 不是合法十六进制：{e}", raw=result) from e
+
+
+# 向后兼容旧调用名（内部已改为 music-3.0 文生曲，audio_base64 参数被忽略）
+def music_cover_from_base64(
+    cfg: DemoConfig,
+    api_key: str,
+    audio_base64: str,  # noqa: ARG001 兼容旧签名，文生曲不再需要参考音频
+    prompt: str,
+    lyrics: Optional[str] = None,
+) -> bytes:
+    return generate_music(cfg, api_key, prompt, lyrics=lyrics)
 
 
 def build_cover_prompt() -> str:

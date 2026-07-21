@@ -175,7 +175,8 @@ export const injectMissionBranch = (platforms, word, vw) => {
   let branchAt = -1;
   for (let i = 0; i < platforms.length; i++) {
     const p = platforms[i];
-    if (p.letterIdx === midLetter && p.symIdx === 0) { branchAt = i; break; }
+    // 只在「真实符号云」的字母首符处分叉：跳过空格停顿云与无 sym 的云
+    if (p.letterIdx === midLetter && p.symIdx === 0 && p.sym && !p.isSpace) { branchAt = i; break; }
   }
   if (branchAt < 1) return platforms;
 

@@ -311,6 +311,66 @@ def effect_for_voice(voice_id: str) -> str:
     return VOICE_EFFECT_MAP.get(voice_id, "bloom")
 
 
+# 真实乐器 timbre / 架子鼓套件 → 前端视觉特效原型。
+# 关键：前端点划特效必须跟「实际听到的摩斯动机音色」对应，而不是旧的鼓点音色。
+# 视觉原型（见 App.jsx CSS）：
+#   bloom —— 柔和泛起+金色光晕缓收（钢琴/电钢/竖琴等有延音的键盘弦乐，余韵柔和）
+#   pluck —— 横向抖动+余震（拨弦类：古筝/吉他/拨奏，颗粒弹性）
+#   crisp —— 极短一闪（清脆短促：木琴/八音盒/拨奏短音）
+#   hit   —— 砸落+同心金环涟漪（打击冲击：架子鼓底鼓/军鼓）
+_TIMBRE_EFFECT_MAP: dict[str, str] = {
+    # 键盘/延音类 → bloom（柔和光晕，配延音余韵）
+    "piano": "bloom",
+    "epiano": "bloom",
+    "epiano-fm": "bloom",
+    "celeste": "bloom",
+    "harp": "bloom",
+    "vibraphone": "bloom",     # 颤音琴金属余韵长，光晕更贴切
+    "tubular-bells": "bloom",  # 管钟宏大绵长
+    "bell": "bloom",
+    "kalimba": "bloom",        # 卡林巴清脆但有余韵，柔和泛起
+    # 拨弦类 → pluck（横向抖动+余震，贴合拨弦颗粒感）
+    "koto": "pluck",
+    "guitar": "pluck",
+    "jazz-guitar": "pluck",
+    "pluck": "pluck",
+    "harpsichord": "pluck",
+    "dulcimer": "pluck",       # 扬琴击弦，颗粒清晰
+    "pizzicato": "pluck",
+    "steel-drums": "pluck",
+    # 清脆短促类 → crisp（极短一闪，无余韵拖尾的明亮点）
+    "music-box": "crisp",
+    "xylophone": "crisp",
+    "marimba": "crisp",
+}
+
+
+def effect_for_hook(style) -> tuple[str, str]:
+    """按风格「实际的摩斯动机音色/形态」返回 (dot_effect, dash_effect)。
+
+    点(短)与划(长)用「有区分度」的特效，贴合摩斯点划语义、也贴合真实听感：
+    - 旋律动机(melodic)：
+        · 拨弦类(古筝/吉他/拨奏) → 点=pluck(短抖动)、划=bloom(长音柔和延展)
+        · 键盘/延音/清脆类       → 点=crisp(短促一闪)、划=bloom(长音光晕延展)
+      —— 划都落到 bloom，天然表现「长音余韵铺开」，与点的短促形成对比。
+    - 节奏动机(percussive，架子鼓)：点=crisp(踩镲一闪)、划=hit(底鼓/军鼓砸落涟漪)，
+      正好对应实际鼓件（点打闭镲、划打底鼓+军鼓）。
+
+    取代旧的 effect_for_voice(drum_voices)——那套跟的是已不再演奏的鼓点音色，
+    与真实听感脱节（如古筝却给木鱼 crisp+堂鼓 hit）。
+    """
+    if getattr(style, "hook_kind", "melodic") == "percussive":
+        # 架子鼓：点=踩镲一闪(crisp)、划=底鼓军鼓砸落(hit)，与鼓件一一对应
+        return "crisp", "hit"
+    timbre = getattr(style, "hook_timbre", "piano")
+    base = _TIMBRE_EFFECT_MAP.get(timbre, "bloom")
+    if base == "pluck":
+        # 拨弦类：点保留拨弦抖动，划用 bloom 表现长音延展
+        return "pluck", "bloom"
+    # 键盘/延音/清脆类：点用 crisp 短促、划用 bloom 长音光晕，形成长短对比
+    return "crisp", "bloom"
+
+
 def _silence(duration_sec: float, sr: int) -> np.ndarray:
     n = max(0, int(duration_sec * sr))
     return np.zeros(n, dtype=np.float32)
@@ -636,44 +696,392 @@ def _note_freq(root_note: str = "A", octave: int = 4, semitone_offset: int = 0) 
     return 440.0 * (2.0 ** ((midi - 69) / 12.0))
 
 
-def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str = "pluck") -> np.ndarray:
-    """带音高的乐音：柔和起音 + 指数衰减 + 少量泛音。
+def _note_midi(root_note: str = "A", octave: int = 4, semitone_offset: int = 0) -> int:
+    """根音名 + 八度 + 半音偏移 → MIDI 音符号（60=C4）。供 SoundFont 演奏。"""
+    base = _NOTE_SEMITONES.get(root_note.upper(), 9)
+    return 12 * (octave + 1) + base + semitone_offset
 
-    默认曲里这层会叠在 AI 音乐上；过硬的 attack 会像“后贴敲击音效”。
-    因此这里刻意把起音/收音做得更圆润，让摩斯更像歌曲内部的 motif。
+
+# 把项目内的 hook_timbre 映射到 GeneralUser GS 音源里的 General MIDI 乐器编号。
+# 用真实采样乐器替代此前手搓的合成器波形，音色真实很多。
+_TIMBRE_TO_GM_PROGRAM: dict[str, int] = {
+    "piano": 0,          # Grand Piano（原有）
+    "pluck": 24,         # Nylon Guitar 尼龙拨弦（原有）
+    "guitar": 25,        # Steel Guitar 钢弦吉他（原有）
+    "harp": 46,          # Orchestral Harp 竖琴（原有）
+    "music-box": 10,     # Music Box 八音盒（原有）
+    "bell": 9,           # Glockenspiel 钟琴（原有）
+    # —— 新增：同为「敲击/拨弦后自然衰减」型，音源采样质量好、延音逻辑通用 ——
+    "epiano": 4,         # Tine Electric Piano 电钢（Rhodes 感，温暖圆润）
+    "epiano-fm": 5,      # FM Electric Piano（DX 电钢，清透）
+    "harpsichord": 6,    # Harpsichord 羽管键琴（古典拨弦键盘）
+    "celeste": 8,        # Celeste 钢片琴（梦幻清亮）
+    "vibraphone": 11,    # Vibraphone 颤音琴（爵士金属，余韵长）
+    "marimba": 12,       # Marimba 马林巴（木质温暖）
+    "xylophone": 13,     # Xylophone 木琴（明亮干脆）
+    "tubular-bells": 14, # Tubular Bells 管钟（教堂钟，宏大绵长）
+    "dulcimer": 15,      # Dulcimer 扬琴（击弦，东方感）
+    "jazz-guitar": 26,   # Jazz Guitar 爵士吉他（圆润）
+    "pizzicato": 45,     # Pizzicato Strings 弦乐拨奏（短促弹性）
+    "koto": 107,         # Koto 日本筝（东方拨弦）
+    "kalimba": 108,      # Kalimba 卡林巴拇指琴（清脆治愈）
+    "steel-drums": 114,  # Steel Drums 钢鼓（加勒比金属，明亮）
+}
+
+# 各音色松键后的「延音尾巴」秒数：钢琴/拨弦/铃等属「击弦(敲击)后自然衰减」型乐器，
+# 松开琴键后声音应自然拖尾衰减，而不是瞬间切断（否则听感"戛然而止"很假、不丝滑）。
+# 做法：把 noteoff 延后到「名义结束 + 此尾巴」，让短音也余音绕梁、相邻音自然交叠
+# （类似轻踩延音踏板）。值越大→余音越长、交叠越多（越连贯，但过大会糊）。
+_TIMBRE_SUSTAIN_TAIL_SEC: dict[str, float] = {
+    "piano": 1.4,       # 钢琴：延音较长，营造持续、不戛然而止的真实感
+    "bell": 2.0,        # 钟琴：金属余韵最长
+    "music-box": 1.8,   # 八音盒：清脆但余音绕梁
+    "pluck": 0.8,       # 尼龙拨弦：衰减较快
+    "guitar": 0.9,      # 钢弦吉他
+    "harp": 1.2,        # 竖琴：泛音绵长
+    # —— 新增乐器的自然延音（按各乐器真实衰减特性设定）——
+    "epiano": 1.6,       # 电钢：Rhodes 音叉余韵温暖绵长
+    "epiano-fm": 1.4,    # FM 电钢：清透，中等延音
+    "harpsichord": 0.7,  # 羽管键琴：拨弦短促
+    "celeste": 1.8,      # 钢片琴：清亮余韵长
+    "vibraphone": 2.2,   # 颤音琴：金属片震荡最久
+    "marimba": 1.0,      # 马林巴：木质，衰减适中
+    "xylophone": 0.6,    # 木琴：明亮干脆，短促
+    "tubular-bells": 3.0,# 管钟：教堂钟余韵极长
+    "dulcimer": 1.5,     # 扬琴：击弦金属余韵
+    "jazz-guitar": 1.0,  # 爵士吉他：圆润
+    "pizzicato": 0.5,    # 弦乐拨奏：短促弹性
+    "koto": 1.3,         # 日本筝：拨弦泛音绵长
+    "kalimba": 1.4,      # 卡林巴：清脆带余韵
+    "steel-drums": 1.2,  # 钢鼓：金属明亮
+}
+
+# SoundFont 单例缓存：sf2 只加载一次，避免每次生成重复读 32MB 文件
+_SF2_PATH = PACKAGE_DIR_SOUNDFONT = (Path(__file__).resolve().parent / "soundfonts" / "gu.sf2")
+_SF2_SYNTH_CACHE: dict = {}
+
+
+def _get_sf2_synth(sr: int):
+    """惰性加载 SoundFont 合成器（按采样率缓存）。sf2 缺失或库不可用时返回 None → 调用方回退手搓合成。"""
+    if not _SF2_PATH.is_file():
+        return None
+    key = int(sr)
+    if key in _SF2_SYNTH_CACHE:
+        return _SF2_SYNTH_CACHE[key]
+    try:
+        import tinysoundfont  # 纯 pip、自带渲染引擎，无需系统 C 库
+        syn = tinysoundfont.Synth(samplerate=sr, gain=1.0)
+        sfid = syn.sfload(str(_SF2_PATH))
+        _SF2_SYNTH_CACHE[key] = (syn, sfid)
+        return _SF2_SYNTH_CACHE[key]
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SoundFont 加载失败，回退手搓合成：%s", e)
+        _SF2_SYNTH_CACHE[key] = None
+        return None
+
+
+def _render_notes_sf2(
+    events: list[tuple[float, float, int]],
+    total_sec: float,
+    sr: int,
+    *,
+    timbre: str,
+) -> Optional[np.ndarray]:
+    """用真实采样音源(SoundFont)把音符事件渲染成单声道 float32 波形。
+
+    events: [(start_sec, dur_sec, midi_note), ...]
+    返回 None 表示音源不可用（调用方应回退到手搓合成）。
+    做法：按时间推进，逐帧 noteon/noteoff，一次性 generate 整段（含尾音余量），
+          再从立体声交织缓冲取出并转单声道。
+    """
+    got = _get_sf2_synth(sr)
+    if got is None:
+        return None
+    syn, sfid = got
+    program = _TIMBRE_TO_GM_PROGRAM.get(timbre, 0)
+    sustain_tail = _TIMBRE_SUSTAIN_TAIL_SEC.get(timbre, 1.2)
+    try:
+        # 复位并选好音色
+        syn.sounds_off(0)
+        syn.program_select(0, sfid, 0, program)
+        # 尾音余量：留足最后一个音「松键后自然衰减」的时间，避免整段结尾被切
+        tail = max(1.2, sustain_tail + 0.5)
+        total_frames = int(round((total_sec + tail) * sr))
+
+        # 构造「帧位置 -> 动作」列表：on/off。
+        # 关键：noteoff 不再压在名义时长的 92% 处（那会让钢琴"戛然而止"），
+        # 而是延后到「音符结束 + sustain_tail」，让声音自然拖尾衰减、相邻音自然交叠，
+        # 听感像真钢琴松键后余音绕梁（近似轻踩延音踏板），更连贯丝滑。
+        # 陷阱：同一音高若前音的延后 off 落在后一个同音 on 之后，会把后音误掐断；
+        #      故对同音高，把前音的 off 收紧到「下一次同音 on 之前一点」。
+        raw_notes: list[tuple[int, int, int]] = []  # (on_frame, off_frame, note)
+        for start_sec, dur_sec, note in events:
+            on = int(round(start_sec * sr))
+            off = int(round((start_sec + max(0.05, dur_sec) + sustain_tail) * sr))
+            raw_notes.append((on, off, note))
+        raw_notes.sort(key=lambda x: x[0])
+
+        # 同音高去冲突：后一个同音 on 之前 20ms 强制松开前一个同音，避免误杀后音。
+        # 反向遍历记录「每个音后续同音的最近 on」，据此夹紧当前音的 off。
+        guard = int(round(0.02 * sr))
+        seen_next: dict[int, int] = {}
+        clamped: list[tuple[int, int, int]] = []
+        for on, off, note in reversed(raw_notes):
+            nxt_same = seen_next.get(note)
+            if nxt_same is not None:
+                off = min(off, nxt_same - guard)
+            off = max(on + int(round(0.05 * sr)), off)  # 至少发声 50ms
+            clamped.append((on, off, note))
+            seen_next[note] = on
+        clamped.reverse()
+
+        actions: list[tuple[int, str, int]] = []
+        for on, off, note in clamped:
+            actions.append((on, "on", note))
+            actions.append((off, "off", note))
+        actions.sort(key=lambda a: a[0])
+
+        out = np.zeros(total_frames, dtype=np.float32)
+        cur = 0
+        ai = 0
+        # 逐段推进：在每个动作点之间 generate 对应帧数
+        while cur < total_frames:
+            # 处理落在当前帧的所有动作
+            while ai < len(actions) and actions[ai][0] <= cur:
+                _, kind, note = actions[ai]
+                if kind == "on":
+                    syn.noteon(0, note, 105)
+                else:
+                    syn.noteoff(0, note)
+                ai += 1
+            nxt = actions[ai][0] if ai < len(actions) else total_frames
+            nxt = min(nxt, total_frames)
+            nframes = max(1, nxt - cur)
+            raw = np.frombuffer(bytes(syn.generate(nframes)), dtype=np.float32)
+            # 立体声交织 -> 单声道
+            if raw.size >= nframes * 2:
+                mono = (raw[0:nframes * 2:2] + raw[1:nframes * 2:2]) * 0.5
+            else:
+                mono = raw[:nframes]
+            end = min(total_frames, cur + mono.shape[0])
+            out[cur:end] += mono[: end - cur]
+            cur = nxt
+        return normalize_peak(out, headroom_db=2.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SoundFont 渲染失败，回退手搓合成：%s", e)
+        return None
+
+
+# =========================================================
+# 真实架子鼓（SoundFont GM 打击乐组，bank=128）
+# 与旋律乐器不同：鼓组在专用通道，音符号=鼓件（而非音高）。
+# GM 标准鼓件音符号（General MIDI Percussion Key Map）：
+# =========================================================
+_GM_DRUM = {
+    "kick": 36,        # Bass Drum 1（底鼓）
+    "kick2": 35,       # Acoustic Bass Drum
+    "snare": 38,       # Acoustic Snare（军鼓）
+    "snare_rim": 40,   # Electric Snare
+    "side_stick": 37,  # Side Stick（鼓边敲）
+    "hat_closed": 42,  # Closed Hi-Hat（闭合踩镲）
+    "hat_open": 46,    # Open Hi-Hat（开放踩镲）
+    "hat_pedal": 44,   # Pedal Hi-Hat
+    "tom_low": 45,     # Low Tom
+    "tom_mid": 47,     # Low-Mid Tom
+    "tom_high": 50,    # High Tom
+    "crash": 49,       # Crash Cymbal 1（碎音镲）
+    "ride": 51,        # Ride Cymbal 1（叮叮镲）
+}
+
+# 摩斯 → 鼓件映射方案：点(·)打轻件（踩镲/鼓边），划(−)打重件（底鼓+军鼓），
+# 每个字母首拍加一记底鼓做「重音锚点」，让点划分组可辨。
+_DRUM_PATTERNS: dict[str, dict] = {
+    # 标准套件：点=闭镲，划=底鼓+军鼓
+    "standard": {"dot": ["hat_closed"], "dash": ["kick", "snare"], "accent": ["kick"]},
+    # 律动套件：点=闭镲，划=军鼓，重音=底鼓+碎音
+    "groove":   {"dot": ["hat_closed"], "dash": ["snare"], "accent": ["kick", "crash"]},
+    # 轻质套件：点=鼓边，划=Tom，适合安静风格
+    "brushed":  {"dot": ["side_stick"], "dash": ["tom_low"], "accent": ["kick2"]},
+}
+
+# 各鼓件「松键前的持续时长」秒数：真实架子鼓不同鼓件的自然衰减差异很大——
+# 镲片(踩镲/碎音/Ride)敲击后会自然震荡拖尾一段时间，若像之前那样一律 60ms 就松键，
+# 会把镲片的自然尾音切掉，听感发硬、不自然；而底鼓/军鼓/Tom 本就短促，无需长尾。
+# 按鼓件给不同延音，让镲片余韵自然、鼓身干净利落。
+_DRUM_NOTE_SUSTAIN_SEC: dict[int, float] = {
+    42: 0.18,   # Closed Hi-Hat 闭合踩镲：短促但保留一点"嗤"尾
+    44: 0.18,   # Pedal Hi-Hat
+    46: 0.55,   # Open Hi-Hat 开放踩镲：尾音较长
+    49: 1.30,   # Crash 碎音镲：金属长尾，最需要余韵
+    51: 1.10,   # Ride 叮叮镲：绵长
+    36: 0.14,   # Bass Drum 底鼓：干净短促
+    35: 0.14,   # Acoustic Bass Drum
+    38: 0.20,   # Snare 军鼓：短促带一点余震
+    40: 0.20,   # Electric Snare
+    37: 0.10,   # Side Stick 鼓边：极短
+    45: 0.30,   # Low Tom
+    47: 0.30,   # Low-Mid Tom
+    50: 0.28,   # High Tom
+}
+_DRUM_DEFAULT_SUSTAIN_SEC = 0.20
+
+
+def _render_drumkit_sf2(
+    events: list[tuple[float, list[int], int]],
+    total_sec: float,
+    sr: int,
+    *,
+    drum_bank: int = 128,
+    drum_preset: int = 0,
+) -> Optional[np.ndarray]:
+    """用真实采样鼓组(SoundFont bank=128)把「鼓点事件」渲染成单声道 float32。
+
+    events: [(start_sec, [鼓件音符号...], velocity), ...]
+        —— 同一时刻可同时敲多个鼓件（如底鼓+军鼓）。
+    鼓件是「一击即衰」的打击乐，noteon 后很快 noteoff（鼓组多为 one-shot 采样）。
+    返回 None 表示音源不可用（调用方回退到手搓合成鼓点）。
+    """
+    got = _get_sf2_synth(sr)
+    if got is None:
+        return None
+    syn, sfid = got
+    try:
+        ch = 9  # 习惯上第 10 通道(索引9)为鼓组通道
+        syn.sounds_off(ch)
+        # 鼓组在 bank 128；若该 preset 不存在，program_select 可能抛错 → 交给外层回退
+        syn.program_select(ch, sfid, drum_bank, drum_preset)
+        tail = 1.8  # 碎音镲尾音最长可达 1.3s，留足余量避免整段结尾被切
+        total_frames = int(round((total_sec + tail) * sr))
+
+        # 构造动作序列：每个鼓件击打 = 一次 on，再按「该鼓件的自然延音」后 off。
+        # 关键：不再一律 60ms 硬切（那会切掉镲片自然尾音、听感发硬），
+        # 镲片(踩镲/碎音/Ride)保留长尾余韵，底鼓/军鼓/Tom 干净短促。
+        actions: list[tuple[int, str, int, int]] = []  # (frame, kind, note, vel)
+        for start_sec, notes, vel in events:
+            on = int(round(start_sec * sr))
+            for note in notes:
+                sus = _DRUM_NOTE_SUSTAIN_SEC.get(note, _DRUM_DEFAULT_SUSTAIN_SEC)
+                off = on + int(round(sus * sr))
+                actions.append((on, "on", note, vel))
+                actions.append((off, "off", note, vel))
+        actions.sort(key=lambda a: a[0])
+
+        out = np.zeros(total_frames, dtype=np.float32)
+        cur = 0
+        ai = 0
+        while cur < total_frames:
+            while ai < len(actions) and actions[ai][0] <= cur:
+                _, kind, note, vel = actions[ai]
+                if kind == "on":
+                    syn.noteon(ch, note, vel)
+                else:
+                    syn.noteoff(ch, note)
+                ai += 1
+            nxt = actions[ai][0] if ai < len(actions) else total_frames
+            nxt = min(nxt, total_frames)
+            nframes = max(1, nxt - cur)
+            raw = np.frombuffer(bytes(syn.generate(nframes)), dtype=np.float32)
+            if raw.size >= nframes * 2:
+                mono = (raw[0:nframes * 2:2] + raw[1:nframes * 2:2]) * 0.5
+            else:
+                mono = raw[:nframes]
+            end = min(total_frames, cur + mono.shape[0])
+            out[cur:end] += mono[: end - cur]
+            cur = nxt
+        return normalize_peak(out, headroom_db=2.0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SoundFont 鼓组渲染失败，回退手搓合成：%s", e)
+        return None
+
+
+def _karplus_strong(freq: float, dur_sec: float, sr: int, *, decay: float = 0.996, blend: float = 1.0) -> np.ndarray:
+    """Karplus-Strong 物理拨弦模型：拨弦/吉他/竖琴的黄金标准，听感非常真实。
+
+    原理：用一段白噪声激励填充延迟线（弦长 = sr/freq），
+    每次循环取相邻两抽头平均（低通）再乘衰减系数写回——
+    高频泛音天然比低频衰减更快，产生真实的"越振越暗"音色，无需手工堆泛音。
+    """
+    n = max(1, int(dur_sec * sr))
+    N = max(2, int(round(sr / max(1e-6, freq))))  # 延迟线长度决定基频
+    rng = np.random.default_rng(int(freq * 100) & 0xFFFFFFFF)  # 频率播种，保证可复现
+    # 激励：带轻微低通的噪声（真实拨弦不是纯白噪声，高频略弱）
+    exc = rng.uniform(-1.0, 1.0, size=N).astype(np.float64)
+    exc = np.convolve(exc, [0.5, 0.5], mode="same")
+    buf = exc.copy()
+    out = np.empty(n, dtype=np.float64)
+    idx = 0
+    prev = 0.0
+    for i in range(n):
+        cur = buf[idx]
+        out[i] = cur
+        # 一阶低通反馈：blend 控制平均程度（拨弦=1.0），decay 控制余音长度
+        nxt = decay * (blend * 0.5 * (cur + prev) + (1.0 - blend) * cur)
+        buf[idx] = nxt
+        prev = cur
+        idx = (idx + 1) % N
+    return out.astype(np.float32)
+
+
+def _synth_hook_note(freq: float, duration_sec: float, sr: int, *, timbre: str = "pluck") -> np.ndarray:
+    """带音高的乐音，力求接近真实乐器：
+
+    - pluck/guitar/harp：Karplus-Strong 物理弦模型（真实拨弦，泛音随时间自然变暗）；
+    - piano：多个"非谐波"泛音，各自独立衰减（高频先消失）+ 琴槌敲击瞬态；
+    - bell/music-box：非谐波金属泛音 + 慢衰减，金属质感。
+
+    共同点：加入起音瞬态噪声（真实乐器的"触发"声）与圆润的 attack/release 包络，
+    让摩斯 motif 听起来像"被演奏出来"而非合成器蜂鸣。
     """
     n = max(1, int(duration_sec * sr))
     t = np.arange(n, dtype=np.float64) / sr
-    if timbre == "bell":
-        attack_sec = 0.032
-        decay = np.exp(-t * 3.0)
-        tone = (
-            np.sin(2 * np.pi * freq * t)
-            + 0.5 * np.sin(2 * np.pi * freq * 2.01 * t)
-            + 0.25 * np.sin(2 * np.pi * freq * 3.86 * t)
-        )
+
+    if timbre in ("pluck", "guitar", "harp", "music-box"):
+        # 物理弦：长音余韵更足，短音更干脆
+        decay_coef = 0.9975 if duration_sec > 0.35 else 0.994
+        body = _karplus_strong(freq, duration_sec, sr, decay=decay_coef, blend=1.0).astype(np.float64)
+        # 拨弦瞬态：极短的宽带"chiff"，让触弦真实
+        tr_len = min(n, max(1, int(0.006 * sr)))
+        rng = np.random.default_rng((int(freq) * 7 + 13) & 0xFFFFFFFF)
+        transient = np.zeros(n, dtype=np.float64)
+        transient[:tr_len] = rng.uniform(-1.0, 1.0, size=tr_len) * np.linspace(1.0, 0.0, tr_len)
+        x = body + 0.18 * transient
+        attack_sec = 0.004
     elif timbre == "piano":
-        attack_sec = 0.018
-        decay = np.exp(-t * 4.2)
-        tone = (
-            np.sin(2 * np.pi * freq * t)
-            + 0.45 * np.sin(2 * np.pi * freq * 2 * t)
-            + 0.2 * np.sin(2 * np.pi * freq * 3 * t)
-            + 0.08 * np.sin(2 * np.pi * freq * 4 * t)
-        )
-    else:  # pluck / music-box
-        attack_sec = 0.020
-        decay = np.exp(-t * 6.0)
-        tone = (
-            np.sin(2 * np.pi * freq * t)
-            + 0.35 * np.sin(2 * np.pi * freq * 2 * t)
-            + 0.12 * np.sin(2 * np.pi * freq * 3 * t)
-        )
+        # 钢琴：非谐波泛音（微微偏离整数倍）+ 每个泛音独立衰减速率（高频衰减更快）
+        partials = [
+            (1.0, 1.00, 3.2),   # (相对振幅, 频率倍数, 衰减速率)
+            (0.55, 2.003, 5.0),
+            (0.32, 3.008, 7.5),
+            (0.18, 4.017, 10.0),
+            (0.09, 5.03, 13.0),
+        ]
+        x = np.zeros(n, dtype=np.float64)
+        for amp, mult, dec in partials:
+            x += amp * np.exp(-t * dec) * np.sin(2 * np.pi * freq * mult * t)
+        # 琴槌敲击瞬态（很短的噪声 attack）
+        tr_len = min(n, max(1, int(0.005 * sr)))
+        rng = np.random.default_rng((int(freq) * 11 + 5) & 0xFFFFFFFF)
+        x[:tr_len] += 0.35 * rng.uniform(-1.0, 1.0, size=tr_len) * np.linspace(1.0, 0.0, tr_len)
+        attack_sec = 0.006
+    else:  # bell
+        # 铃/钟：明显非谐波的金属泛音（含 2.76、5.40 等钟体模态），慢衰减
+        partials = [
+            (1.0, 1.00, 1.6),
+            (0.6, 2.76, 2.0),
+            (0.4, 5.40, 2.6),
+            (0.25, 8.93, 3.4),
+        ]
+        x = np.zeros(n, dtype=np.float64)
+        for amp, mult, dec in partials:
+            x += amp * np.exp(-t * dec) * np.sin(2 * np.pi * freq * mult * t)
+        attack_sec = 0.004
+
+    # 圆润 attack（sin² 起音）+ 尾部 release（cos² 收音），消除咔哒声
     attack = np.sin(np.clip(t / attack_sec, 0.0, 1.0) * (np.pi / 2.0)) ** 2
-    release_len = min(n, max(1, int(0.080 * sr)))
+    release_len = min(n, max(1, int(0.070 * sr)))
     release = np.ones(n, dtype=np.float64)
     release[-release_len:] = np.cos(np.linspace(0.0, np.pi / 2.0, release_len)) ** 2
-    x = (attack * release * decay * tone).astype(np.float32)
+    x = (attack * release * x).astype(np.float32)
     return _norm(x, 0.62)
 
 
@@ -710,6 +1118,7 @@ def build_morse_hook(
     tokens = morse_dot_dash.split()
     placed: list[tuple[int, np.ndarray]] = []  # (start_sample, wave)
     note_timeline: list[dict] = []
+    sf2_events: list[tuple[float, float, int]] = []  # (start_sec, dur_sec, midi) 供 SoundFont 演奏
     cursor = 0.0  # 秒
 
     for ti, token in enumerate(tokens):
@@ -730,6 +1139,7 @@ def build_morse_hook(
             wave = _synth_hook_note(freq, dur, sr, timbre=timbre)
             start_sample = int(round(cursor * sr))
             placed.append((start_sample, wave))
+            sf2_events.append((cursor, dur, _note_midi(root, octave, deg)))
             note_timeline.append(
                 {
                     "letter": "",
@@ -746,6 +1156,13 @@ def build_morse_hook(
             cursor += dt_dot * 0.5  # 字母间呼吸
 
     total_sec = cursor if cursor > 0 else dt_dot
+    total_ms = int(round(total_sec * 1000.0))
+
+    # 优先用真实采样音源(SoundFont)演奏；不可用时回退到手搓合成波形
+    sf2_wave = _render_notes_sf2(sf2_events, total_sec, sr, timbre=timbre)
+    if sf2_wave is not None:
+        return sf2_wave, note_timeline, total_ms
+
     total_samples = int(round(total_sec * sr))
     buf = np.zeros(total_samples + sr // 10, dtype=np.float32)  # 末尾余量给尾音
     for start_sample, wave in placed:
@@ -755,7 +1172,6 @@ def build_morse_hook(
             end = buf.shape[0]
         buf[start_sample:end] += wave
     buf = normalize_peak(buf, headroom_db=2.0)
-    total_ms = int(round(total_sec * 1000.0))
     return buf, note_timeline, total_ms
 
 
@@ -781,5 +1197,132 @@ def render_morse_hook_with_timeline(
         octave=octave,
         dash_ratio=dash_ratio,
         timbre=timbre,
+    )
+
+
+def build_morse_drumkit(
+    morse_dot_dash: str,
+    bpm: float,
+    sr: int,
+    *,
+    dash_ratio: float = 2.0,
+    kit: str = "standard",
+    drum_preset: int = 0,
+    velocity: int = 115,
+) -> tuple[np.ndarray, list[dict], int]:
+    """把摩斯点划用「真实采样架子鼓」打成一段鼓点动机（mono float32）。
+
+    与 build_morse_hook 平行，但输出的是打击乐而非旋律：
+    - 点(·) = 八分音符位置敲轻件（默认闭合踩镲）；
+    - 划(−) = dash_ratio 倍时长起点敲重件（默认底鼓+军鼓）；
+    - 每个字母的第一击叠一记「重音件」(accent，默认底鼓)，让字母分组可辨；
+    - 字母之间留半个八分的呼吸。
+
+    kit: _DRUM_PATTERNS 的键（standard / groove / brushed）。
+    drum_preset: SoundFont bank128 里的鼓组 preset（0=Standard Kit）。
+
+    Returns:
+        (waveform, note_timeline, total_ms)，note_timeline 结构与 hook 对齐，
+        便于前端用同一套逐音符高亮逻辑。
+    """
+    pattern = _DRUM_PATTERNS.get(kit, _DRUM_PATTERNS["standard"])
+    dot_notes = [_GM_DRUM[n] for n in pattern["dot"]]
+    dash_notes = [_GM_DRUM[n] for n in pattern["dash"]]
+    accent_notes = [_GM_DRUM[n] for n in pattern["accent"]]
+
+    beat = 60.0 / max(1.0, float(bpm))
+    dt_dot = beat / 2.0  # 八分音符
+    dt_dash = dt_dot * max(1.0, float(dash_ratio))
+
+    tokens = morse_dot_dash.split()
+    events: list[tuple[float, list[int], int]] = []  # (start_sec, [鼓件音符号], vel)
+    note_timeline: list[dict] = []
+    cursor = 0.0
+
+    for ti, token in enumerate(tokens):
+        first_in_letter = True
+        for sym in token:
+            if sym == ".":
+                notes = list(dot_notes)
+                dur = dt_dot
+                is_dash = False
+            elif sym == "-":
+                notes = list(dash_notes)
+                dur = dt_dash
+                is_dash = True
+            else:
+                continue
+            # 字母首击叠加重音件（底鼓/碎音），强调字母边界；用更高力度
+            if first_in_letter:
+                for a in accent_notes:
+                    if a not in notes:
+                        notes.append(a)
+                vel = min(127, velocity + 10)
+                first_in_letter = False
+            else:
+                vel = velocity
+            events.append((cursor, notes, vel))
+            note_timeline.append(
+                {
+                    "letter": "",
+                    "morse": token,
+                    "freq": 0.0,  # 鼓点无音高
+                    "start_ms": round(cursor * 1000.0, 1),
+                    "end_ms": round((cursor + dur) * 1000.0, 1),
+                    "is_dash": is_dash,
+                }
+            )
+            cursor += dur
+        if ti < len(tokens) - 1:
+            cursor += dt_dot * 0.5  # 字母间呼吸
+
+    total_sec = cursor if cursor > 0 else dt_dot
+    total_ms = int(round(total_sec * 1000.0))
+
+    # 真实采样鼓组渲染；不可用时回退到手搓合成鼓点（VOICE_REGISTRY）
+    kit_wave = _render_drumkit_sf2(events, total_sec, sr, drum_preset=drum_preset)
+    if kit_wave is not None:
+        return kit_wave, note_timeline, total_ms
+
+    # ---- 回退：用手搓合成鼓件拼一段（音色偏假，仅在无 SoundFont 时兜底）----
+    logger.info("架子鼓回退到手搓合成（SoundFont 不可用）")
+    rng = np.random.default_rng(20260719)
+    total_samples = int(round(total_sec * sr))
+    buf = np.zeros(total_samples + sr // 2, dtype=np.float32)
+    for start_sec, notes, _vel in events:
+        start = int(round(start_sec * sr))
+        # 简单映射：含底鼓→kick，含军鼓/踩镲→snare/hihat
+        hit = np.zeros(1, dtype=np.float32)
+        if _GM_DRUM["kick"] in notes or _GM_DRUM["kick2"] in notes:
+            hit = _synth_kick_hit(0.18, sr)
+        elif _GM_DRUM["snare"] in notes or _GM_DRUM["tom_low"] in notes:
+            hit = _synth_snare_hit(rng, 0.12, sr)
+        else:
+            hit = _hihat_short(rng, 0.06, sr)
+        end = min(buf.shape[0], start + hit.shape[0])
+        if end > start:
+            buf[start:end] += hit[: end - start]
+    buf = normalize_peak(buf, headroom_db=2.0)
+    return buf, note_timeline, total_ms
+
+
+def render_morse_drumkit_with_timeline(
+    morse_dot_dash: str,
+    cfg: DemoConfig,
+    *,
+    dash_ratio: float = 2.0,
+    kit: str = "standard",
+    drum_preset: int = 0,
+    bpm: Optional[float] = None,
+) -> tuple[np.ndarray, list[dict], int]:
+    """便捷封装：用给定 BPM（默认 cfg.bpm）把摩斯打成真实采样架子鼓鼓点。"""
+    use_bpm = float(bpm) if bpm else float(cfg.bpm)
+    return build_morse_drumkit(
+        morse_dot_dash,
+        use_bpm,
+        cfg.sample_rate,
+        dash_ratio=dash_ratio,
+        kit=kit,
+        drum_preset=drum_preset,
     )
 

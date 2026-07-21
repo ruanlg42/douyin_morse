@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>乐器音色试听 · 同一段摩斯 LOVE · 真实采样 + 自然延音</title>
+<style>
+  body{background:#0e0f14;color:#e8e6f0;font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:32px}
+  h1{font-size:20px;color:#f2d27a;margin:0 0 6px}
+  .sub{color:#9a97ab;font-size:13px;margin-bottom:20px;max-width:760px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;max-width:1100px}
+  .card{background:#181a22;border:1px solid #2a2d3a;border-radius:12px;padding:12px 14px}
+  .card.cur{border-color:#f2d27a;box-shadow:0 0 0 1px #f2d27a55}
+  .tag{font-weight:600;color:#f2d27a;font-size:15px}
+  .gm{color:#6f6c82;font-size:12px;margin-left:6px}
+  .cat{font-size:11px;color:#7aa2f2;margin-top:2px}
+  audio{width:100%;margin-top:8px;filter:invert(.92) hue-rotate(180deg)}
+  .group{font-size:13px;color:#8b88a0;margin:22px 0 8px;border-bottom:1px solid #2a2d3a;padding-bottom:4px}
+</style>
+<h1>🎹 乐器音色试听（同一段摩斯 · LOVE）</h1>
+<div class="sub">
+  同一段旋律动机（C 大调五声 · 96BPM），只换乐器音色，全部来自真实采样音源库(GeneralUser GS)，
+  并已加上「按乐器特性的自然延音尾巴」——不再戛然而止。挑你喜欢的，告诉我用在哪首/哪种风格。
+</div>
+<div id="root"></div>
+<script>
+const GROUPS = [
+  ["键盘类（钢琴家族）", [
+    ["piano","大钢琴 Grand Piano","GM#0 · 当前使用",true],
+    ["epiano","电钢 Rhodes","GM#4 · 温暖圆润",false],
+    ["epiano-fm","FM 电钢 DX","GM#5 · 清透",false],
+    ["harpsichord","羽管键琴 Harpsichord","GM#6 · 古典拨弦键盘",false],
+  ]],
+  ["敲击金属/木质类（音色最'亮'、余韵好）", [
+    ["celeste","钢片琴 Celeste","GM#8 · 梦幻清亮",false],
+    ["vibraphone","颤音琴 Vibraphone","GM#11 · 爵士金属，余韵长",false],
+    ["marimba","马林巴 Marimba","GM#12 · 木质温暖",false],
+    ["xylophone","木琴 Xylophone","GM#13 · 明亮干脆",false],
+    ["bell","钟琴 Glockenspiel","GM#9 · 清亮金属",false],
+    ["tubular-bells","管钟 Tubular Bells","GM#14 · 教堂钟，宏大绵长",false],
+    ["music-box","八音盒 Music Box","GM#10 · 童话感",false],
+    ["steel-drums","钢鼓 Steel Drums","GM#114 · 加勒比明亮",false],
+  ]],
+  ["拨弦类（东方/民族感强）", [
+    ["dulcimer","扬琴 Dulcimer","GM#15 · 击弦，东方感",false],
+    ["kalimba","卡林巴 Kalimba","GM#108 · 清脆治愈",false],
+    ["koto","日本筝 Koto","GM#107 · 东方拨弦",false],
+    ["harp","竖琴 Harp","GM#46 · 泛音绵长",false],
+    ["jazz-guitar","爵士吉他 Jazz Guitar","GM#26 · 圆润",false],
+    ["pluck","尼龙吉他 Nylon","GM#24 · 柔和",false],
+    ["pizzicato","弦乐拨奏 Pizzicato","GM#45 · 短促弹性",false],
+  ]],
+];
+const root = document.getElementById('root');
+for(const [gname, items] of GROUPS){
+  const g = document.createElement('div'); g.className='group'; g.textContent=gname; root.appendChild(g);
+  const grid = document.createElement('div'); grid.className='grid'; root.appendChild(grid);
+  for(const [id,name,cat,cur] of items){
+    const c=document.createElement('div'); c.className='card'+(cur?' cur':'');
+    c.innerHTML = `<div><span class="tag">${name}</span></div>`
+      + `<div class="cat">${cat}</div>`
+      + `<audio controls preload="none" src="/assets/timbre_demo/timbre_${id}.mp3?t=${Date.now()}"></audio>`;
+    grid.appendChild(c);
+  }
+}
+</script>

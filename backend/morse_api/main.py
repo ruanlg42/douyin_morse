@@ -29,9 +29,10 @@ from pydantic import BaseModel, Field
 
 from .config import PACKAGE_DIR, load_config
 from .drum_synth import (
-    effect_for_voice,
+    effect_for_hook,
     floats_to_wav_bytes_mono,
     render_intro_drums_with_timeline,
+    render_morse_drumkit_with_timeline,
     render_morse_hook_with_timeline,
 )
 from . import beat_align
@@ -40,7 +41,7 @@ from .minimax_client import (
     MiniMaxAPIError,
     generate_instrumental_prompt_for_name,
     generate_lyrics_for_name,
-    music_cover_from_base64,
+    generate_music,
 )
 from .morse_codec import abbrev_to_morse
 from .styles import list_styles, resolve as resolve_style
@@ -111,7 +112,9 @@ _MISSION_INTRO_OFFSET_MS = 1600
 _MISSION_M_REL = (0, 750)
 _MISSION_I_REL = (850, 1400)
 _MISSION_CYCLE_MS = 1600
-_MISSION_CYCLES = 8
+# 循环 12 次：起点 1600ms + 12×1600ms = 20800ms，让点划特效完整持续到 ~20s
+# （原 8 次仅到 ~14.4s，末段音乐还在但特效提前停了，显得不完整）。
+_MISSION_CYCLES = 12
 _MISSION_DISPLAY_PHRASE = "Mission: Impossible"
 
 
@@ -185,8 +188,7 @@ def _build_horse_demo_payload() -> dict:
         short_voice=style.drum_voices[0],
         long_voice=style.drum_voices[1],
     )
-    dot_effect = effect_for_voice(style.drum_voices[0])
-    dash_effect = effect_for_voice(style.drum_voices[1])
+    dot_effect, dash_effect = effect_for_hook(style)
     letters = list(morse.abbrev_normalized)
     hero_base = len(_HORSE_DISPLAY_PHRASE) - len(morse.abbrev_normalized)
     letter_timeline: list[dict] = []
@@ -313,7 +315,7 @@ def _mix_hook_across_track(
     base_overlay_db: float = -12.0,
     target_bpm: Optional[int] = None,
     first_hook_offset_ms: float = 900.0,
-) -> tuple[bytes, dict]:
+) -> tuple[bytes, dict, dict]:
     """
     把「音高化摩斯 hook」按全曲结构铺设并叠入 AI 音乐（全程 numpy 采样域运算，快且干净）：
     - librosa 探测成品真实 BPM/拍点/主调；
@@ -337,6 +339,7 @@ def _mix_hook_across_track(
 
     music = _seg_to_mono_float(music_seg, sr)
     n_total = music.shape[0]
+    music_clean = music.copy()   # 裁剪后、未做 sidechain 的纯 AI 音乐，用于分轨试听（与合并轨等长对齐）
 
     # 1) 探测节拍/调式
     info = beat_align.analyze_track(music_mp3_bytes, target_bpm=target_bpm)
@@ -406,11 +409,26 @@ def _mix_hook_across_track(
     if fade_n > 0:
         out[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)
 
-    out16 = np.clip(out, -1.0, 1.0)
-    wav_bytes = floats_to_wav_bytes_mono(out16, sr)
-    seg = AudioSegment.from_file(BytesIO(wav_bytes), format="wav")
-    buf = BytesIO()
-    seg.export(buf, format="mp3", bitrate="256k")
+    # 分轨导出：把 float mono 波形编码为 mp3 bytes 的小工具
+    def _to_mp3(sig: np.ndarray) -> bytes:
+        s16 = np.clip(sig, -1.0, 1.0)
+        wb = floats_to_wav_bytes_mono(s16, sr)
+        sseg = AudioSegment.from_file(BytesIO(wb), format="wav")
+        b = BytesIO()
+        sseg.export(b, format="mp3", bitrate="256k")
+        return b.getvalue()
+
+    mixed_mp3 = _to_mp3(out)
+    # 摩斯轨(x)：单独听时太轻，做一次峰值归一化到 -1dB，方便清晰辨认点划
+    hook_solo = hook_layer.copy()
+    hpeak = float(np.max(np.abs(hook_solo))) or 1.0
+    if hpeak > 1e-6:
+        hook_solo = hook_solo * (0.891 / hpeak)  # -1dBFS
+    stems = {
+        "music": _to_mp3(music_clean),  # 裁剪后、未 duck 的纯 AI 编曲/人声轨 f（与合并轨等长）
+        "morse": _to_mp3(hook_solo),    # 摩斯动机轨 x（归一化后，便于单独辨认）
+    }
+
     meta = {
         "detected_bpm": info.bpm,
         "detected_key": f"{info.root} {info.scale}",
@@ -419,7 +437,7 @@ def _mix_hook_across_track(
         "total_ms": total_ms,
         "first_hook_start_ms": round(float(first_snapped or first_hook_offset_ms), 1),
     }
-    return buf.getvalue(), meta
+    return mixed_mp3, meta, stems
 
 
 def _run_generate(
@@ -455,8 +473,9 @@ def _run_generate(
         long_voice=style.drum_voices[1],
     )
 
-    dot_effect = effect_for_voice(style.drum_voices[0])
-    dash_effect = effect_for_voice(style.drum_voices[1])
+    # 点划视觉特效：跟「实际的摩斯动机乐器/形态」对应（钢琴→bloom、古筝→pluck、架子鼓→hit），
+    # 而不是旧鼓点音色 drum_voices（那套已不演奏，会与听感脱节）。
+    dot_effect, dash_effect = effect_for_hook(style)
 
     letters = list(morse.abbrev_normalized)
     letter_timeline: list[dict] = []
@@ -473,17 +492,29 @@ def _run_generate(
             }
         )
 
-    # 音高化摩斯 hook（贯穿全曲的记忆动机），用目标 BPM 与风格调式
+    # 音高化摩斯 hook（贯穿全曲的记忆动机），用目标 BPM 与风格调式。
+    # 依 style.hook_kind 选择动机形态：
+    #   melodic    → 真实旋律乐器(钢琴/铃/拨弦)演奏音高化旋律；
+    #   percussive → 真实架子鼓(GM 鼓组)把点划打成鼓点。
     _progress("hook", 18)
-    hook_wave, hook_notes, hook_ms = render_morse_hook_with_timeline(
-        morse.morse_dot_dash,
-        cfg,
-        root=style.key_root,
-        scale=style.key_scale,
-        octave=style.hook_octave,
-        timbre=style.hook_timbre,
-        bpm=target_bpm,
-    )
+    if style.hook_kind == "percussive":
+        hook_wave, hook_notes, hook_ms = render_morse_drumkit_with_timeline(
+            morse.morse_dot_dash,
+            cfg,
+            kit=style.drum_kit,
+            drum_preset=style.drum_preset,
+            bpm=target_bpm,
+        )
+    else:
+        hook_wave, hook_notes, hook_ms = render_morse_hook_with_timeline(
+            morse.morse_dot_dash,
+            cfg,
+            root=style.key_root,
+            scale=style.key_scale,
+            octave=style.hook_octave,
+            timbre=style.hook_timbre,
+            bpm=target_bpm,
+        )
 
     scale_cn = {
         "minor": "小调", "major": "大调", "minor_pent": "小调五声",
@@ -506,6 +537,7 @@ def _run_generate(
         theme_cn=theme_cn,
         target_bpm=target_bpm,
         key_desc=key_desc,
+        hook_kind=style.hook_kind,
     )
 
     lyrics: Optional[str] = None
@@ -522,11 +554,13 @@ def _run_generate(
         )
 
     _progress("ai_music", 55)
-    music_bytes = music_cover_from_base64(cfg, api_key, "", music_prompt, lyrics=lyrics)
+    # 路线 A：music-3.0 文生曲出编曲 f（纯器乐 / 或带人声）。摩斯 x 随后在本地叠回，保证清晰可听。
+    music_bytes = generate_music(cfg, api_key, music_prompt, lyrics=lyrics)
 
     _progress("align_mix", 82)
+    stems: dict = {}
     try:
-        mixed, mix_meta = _mix_hook_across_track(
+        mixed, mix_meta, stems = _mix_hook_across_track(
             hook_wave,
             hook_notes,
             hook_ms,
@@ -535,10 +569,12 @@ def _run_generate(
             base_overlay_db=style.drum_overlay_db,
             target_bpm=target_bpm,
         )
+        # stems 已含裁剪后等长的 music(f) 与 morse(x)，与合并轨对齐，无需再覆盖
     except Exception as e:  # noqa: BLE001
         logger.warning("全曲 hook 混音失败，回退到前奏鼓点叠加：%s", e)
         mixed = _mix_intro_drums_with_music(intro_wav, music_bytes, drum_overlay_db=style.drum_overlay_db)
         mix_meta = {"fallback": True}
+        stems = {"music": music_bytes}
 
     logger.info(
         "music_prompt_from_llm=%s  with_vocals=%s  lyrics_from_llm=%s  mix=%s",
@@ -557,6 +593,10 @@ def _run_generate(
         out_path.write_bytes(mixed)
         audio_url = f"/assets/{safe_asset}"
         fname = safe_asset
+        # 分轨落盘（同目录，加 _music / _morse 后缀），生成对应可播放 URL
+        stem_base = safe_asset[:-4]
+        stem_dir = ASSETS_DIR
+        stem_url_prefix = "/assets"
     else:
         safe = "".join(c for c in morse.abbrev_normalized.lower() if c.isalnum()) or "user"
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -565,6 +605,19 @@ def _run_generate(
         out_path = OUTPUT_DIR / fname
         out_path.write_bytes(mixed)
         audio_url = f"/media/{fname}"
+        stem_base = fname[:-4]
+        stem_dir = OUTPUT_DIR
+        stem_url_prefix = "/media"
+
+    # 写出分轨文件（music=AI编曲/含人声，morse=摩斯动机），供前端分开播放
+    stem_urls: dict[str, str] = {}
+    for key in ("music", "morse"):
+        data = stems.get(key)
+        if not data:
+            continue
+        sfname = f"{stem_base}_{key}.mp3"
+        (stem_dir / sfname).write_bytes(data)
+        stem_urls[key] = f"{stem_url_prefix}/{sfname}"
 
     first_hook_start_ms = float(mix_meta.get("first_hook_start_ms", 0.0) or 0.0)
     timeline_for_audio: list[dict] = []
@@ -581,6 +634,7 @@ def _run_generate(
         "style_label": style.label,
         "with_vocals": with_vocals,
         "audio_url": audio_url,
+        "stem_urls": stem_urls,   # {music: AI编曲/人声轨, morse: 摩斯动机轨}，供分轨试听
         "intro_duration_ms": int(round(intro_ms + first_hook_start_ms)),
         "intro_anim_delay_ms": 0,
         "letter_timeline": timeline_for_audio,

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Play, Pause, Share2, ChevronLeft, ChevronRight, ChevronsRight, ArrowRight, Zap, Shuffle, List, ListOrdered, Repeat, Repeat1, Delete, GraduationCap, Target, Music2, Sparkles, Check, X, Volume2, VolumeX, Flame, RotateCcw, Gamepad2, Download, Heart, MoreHorizontal, BookMarked } from 'lucide-react';
+import { Play, Pause, Share2, ChevronLeft, ChevronRight, ChevronsRight, ArrowRight, Zap, Shuffle, List, ListOrdered, Repeat, Repeat1, Delete, GraduationCap, Target, Music2, Sparkles, Check, X, Volume2, VolumeX, Flame, RotateCcw, Download, Heart, MoreHorizontal, BookMarked } from 'lucide-react';
 import { apiUrl } from './api.js';
 import staticQuizData from '../../data/static-quiz.json';
 import JumpGame from './JumpGame.jsx';
 import MorseLetterAnim from './MorseLetterAnim.jsx';
+import SignalOwlIcon from './SignalOwlIcon.jsx';
 import { startMorseTone, rampMorseTone, stopMorseTone, getMorseAudioContext } from './morseAudio.js';
 import { OFFLINE_RADIO as GENERATED_OFFLINE_RADIO } from './offlineRadio.js';
 
@@ -35,7 +36,7 @@ const CELEBRATION_SLOGANS = [
 
 const TABS = [
   { id: 'music', label: '声印', icon: Music2,        grow: 1 },
-  { id: 'play',  label: '信使', icon: Gamepad2,      grow: 1 },
+  { id: 'play',  label: '信使', icon: SignalOwlIcon, grow: 1 },
 ];
 
 /** Gentle haptic — safe (noop where unsupported). */
@@ -2374,7 +2375,7 @@ const MusicScreen = ({ isActive = true }) => {
                   </span>
                   <span className="flex-1 min-w-0">
                     <span className="flex items-baseline gap-2">
-                      <span className="text-[14px] font-bold tracking-[0.12em]" style={{ color: 'var(--text)' }}>{t.word}</span>
+                      <span className="text-[14px] font-bold tracking-[0.12em]" style={{ color: 'var(--text)' }}>{t.display_phrase || t.word}</span>
                       <span className="font-mono text-[11px]" style={{ color: 'var(--gold-300)', letterSpacing: '0.1em' }}>{t.morse_pretty}</span>
                     </span>
                     <span className="block text-[10.5px] mt-0.5 truncate" style={{ color: 'var(--text-muted)' }}>

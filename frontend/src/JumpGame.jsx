@@ -4,7 +4,15 @@ import {
   Music2, Volume2, VolumeX, Check, MoreHorizontal, GraduationCap, Home,
 } from 'lucide-react';
 import { apiUrl } from './api.js';
-import { encodeLevelCode, decodeLevelCode } from './jumpCode.js';
+import { encodeLevelCode, decodeLevelCode, normalizeMessage, SEED_MAX, MSG_MAX_LEN } from './jumpCode.js';
+import SignalOwlIcon from './SignalOwlIcon.jsx';
+import {
+  findSweptLanding,
+  jumpHeightForCharge,
+  landingQuality,
+  platformAcceptsSymbol,
+  symbolForCharge,
+} from './jumpPhysics.js';
 import {
   SKILL_WORDS, findWordAtTail, findWordPrefixHints,
   getWordMnemonic, getMissionWordHint,
@@ -20,8 +28,8 @@ import {
 /* =========================================================
    JumpGame v2 — 摩斯跳一跳 · 「星途信使」未寄之信
    核心机制：
-   - 蓄力 < 0.4 → 短按 ·（dot），跳跃距离 60–180
-   - 蓄力 ≥ 0.4 → 长按 —（dash），跳跃距离 180–360
+   - 蓄力 < 0.4 → 短按 ·（dot），跳跃距离 112–190
+   - 蓄力 ≥ 0.4 → 长按 —（dash），跳跃距离 220–360
    - 平台三态：DOT / DASH / BOTH（间距决定能否 di / da）
    - PERFECT 落点 = 字母封箱：把符号缓冲合并为字母提交
    - 词典命中 ≥3 字母英文词 → 加分 / 触发技能
@@ -37,6 +45,19 @@ const MORSE_MAP = {
 const MORSE_TO_LETTER = Object.fromEntries(
   Object.entries(MORSE_MAP).map(([l, m]) => [m, l]),
 );
+// 任务模式（寄一封信）专用的完整摩斯表：A-Z + 0-9 + 常用标点。
+// 学习模式仍只用上面的 MORSE_MAP（A-Z），互不影响。
+const FULL_MORSE = {
+  ...MORSE_MAP,
+  0:'-----', 1:'.----', 2:'..---', 3:'...--', 4:'....-',
+  5:'.....', 6:'-....', 7:'--...', 8:'---..', 9:'----.',
+  '.':'.-.-.-', ',':'--..--', '?':'..--..', "'":'.----.', '!':'-.-.--',
+  '/':'-..-.', '(':'-.--.', ')':'-.--.-', '&':'.-...', ':':'---...',
+  ';':'-.-.-.', '=':'-...-', '+':'.-.-.', '-':'-....-', '_':'..--.-',
+  '"':'.-..-.', '@':'.--.-.', '$':'...-..-',
+};
+/** 任务模式取字符摩斯码：空格返回 ''（空格不发码，是词间停顿）。 */
+const missionMorse = (ch) => (ch === ' ' ? '' : (FULL_MORSE[ch] || ''));
 const MORSE_PREFIXES = (() => {
   const s = new Set();
   Object.values(MORSE_MAP).forEach((m) => {
@@ -142,6 +163,7 @@ const _blip = (freq, dur = 0.12, type = 'triangle', vol = 0.16, slideTo = null) 
 };
 const sndJump    = (long) => _blip(long ? 360 : 540, long ? 0.20 : 0.12, 'triangle', 0.16, long ? 760 : 920);
 const sndLand    = ()     => _blip(620, 0.10, 'sine', 0.14);
+const sndEdge    = ()     => _blip(460, 0.09, 'triangle', 0.09, 560);
 const sndPerfect = ()     => { _blip(1175, 0.10, 'sine', 0.14); setTimeout(() => _blip(1568, 0.16, 'sine', 0.14), 70); };
 const sndOver    = ()     => _blip(220, 0.36, 'sawtooth', 0.18, 80);
 const sndLetter  = ()     => { _blip(880, 0.08, 'sine', 0.12); setTimeout(() => _blip(1320, 0.10, 'sine', 0.12), 50); };
@@ -180,11 +202,14 @@ const chargeBarFills = (ratio) => {
     : Math.min(1, (ratio - SYMBOL_SPLIT) / (1 - SYMBOL_SPLIT));
   return { dotFill, dashFill };
 };
-const MIN_JUMP_DIST  = 60;     // 最小升空高度
 const MAX_JUMP_DIST  = 360;    // 最大升空高度
 const PERFECT_TOL_PX = 13;
-const CHAR_ANCHOR_Y  = 0.66;   // 角色固定在屏幕 66% 高度处，上方留空看云
 const CLOUD_CORE_H   = 15;     // 云台核心视觉厚度
+const characterAnchorRatio = (height) => {
+  if (height < 360) return 0.43;
+  if (height < 480) return 0.53;
+  return 0.64;
+};
 
 /* ---------- 台球式瞄准（左右角度，按住后左右拖动手动控制）---------- */
 const AIM_DRAG_FULL_PX = 120;  // 手指横向拖动多少像素达到满偏（±1）
@@ -197,6 +222,41 @@ const OWL_H = 42;
 
 const rand   = (min, max) => min + Math.random() * (max - min);
 const choice = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+const buildLaunchPlan = (s, ratio, forceTarget = false) => {
+  const symbol = symbolForCharge(ratio, SYMBOL_SPLIT);
+  const fromIdx = s.standIdx;
+  const next = s.platforms[fromIdx + 1];
+  const targetGap = next ? next.y - s.character.alt : 0;
+  const accepts = platformAcceptsSymbol(next, symbol);
+  let height = jumpHeightForCharge(ratio, targetGap, accepts || forceTarget, SYMBOL_SPLIT);
+
+  const aimNorm = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
+  const reach = 0.45 + 0.55 * ratio;
+  let x1 = s.character.x + aimNorm * AIM_MAX_DX * reach;
+  let snappedIdx = -1;
+
+  if (forceTarget && next) {
+    x1 = next.cx;
+    snappedIdx = fromIdx + 1;
+    height = Math.max(height, targetGap + 30);
+  } else if (next) {
+    const layerY = next.y;
+    let bestDist = Infinity;
+    for (let i = fromIdx + 1; i < Math.min(s.platforms.length, fromIdx + 5); i += 1) {
+      const platform = s.platforms[i];
+      if (!platform || platform.broken || Math.abs(platform.y - layerY) > 12) continue;
+      const dist = Math.abs(platform.cx - x1);
+      if (dist < platform.w / 2 + AIM_SNAP_X_PAD && dist < bestDist) {
+        bestDist = dist;
+        snappedIdx = i;
+      }
+    }
+    if (snappedIdx >= 0) x1 = s.platforms[snappedIdx].cx;
+  }
+
+  return { symbol, height: Math.min(MAX_JUMP_DIST, height), x1, snappedIdx, accepts, next };
+};
 
 /* =========================================================
    云台生成（世界坐标：y = 海拔，向上增大）
@@ -315,33 +375,58 @@ const nextPlatform = (prev, forceKind = null, lastKinds = [], diff = 0, vw = 360
    每个符号一朵云，垂直间距即点/划；字母最后一朵是「封蜡云」；
    路顶是终点信箱。发错码 = 高度不对 = 坠落 →「电报重发」。
    ========================================================= */
-const buildMissionLevel = (word, vw) => {
+const buildMissionLevel = (word, vw, seed = 0) => {
+  // 用 (整句 + seed) 播种关卡专用 rng：同 (word, seed) → 逐像素相同的云路。
+  // 句子本身也参与播种，避免不同句碰上同一 seed 时布局雷同。
+  let h = seed >>> 0;
+  for (let i = 0; i < word.length; i++) h = (Math.imul(h ^ word.charCodeAt(i), 2654435761) + 1) >>> 0;
+  resetLevelRng(h);
   const platforms = [{ y: 0, cx: vw / 2, w: CLOUD_W_MAX, winH: 110, kind: 'both', hue: 38, isStart: true }];
-  const letterStarts = [];
+  const letterStarts = [];              // 每个字符（含空格）对应的首朵云 index
   let prev = platforms[0];
-  const letters = word.split('');
-  const totalSyms = letters.reduce((n, L) => n + (MORSE_MAP[L]?.length || 0), 0);
-  // 词越长云越薄，后段更紧张（窗口 66~92）
+  const chars = word.split('');         // 含空格：空格是词间停顿
+  // 总符号数（空格不发码）：决定云的稀薄程度
+  const totalSyms = chars.reduce((n, ch) => n + missionMorse(ch).length, 0);
+  // 句子越长云越薄，后段更紧张（窗口 66~92）
   const thin = Math.min(26, Math.max(0, (totalSyms - 8) * 2.4));
 
-  letters.forEach((letter, li) => {
-    const code = MORSE_MAP[letter] || '';
+  const clampCx = (cx) => {
+    const anchor = vw / 2;
+    return Math.abs(cx - anchor) > vw * 0.4 ? anchor + Math.sign(cx - anchor) * vw * 0.4 : cx;
+  };
+
+  chars.forEach((ch, li) => {
     letterStarts.push(platforms.length);
+
+    // 空格 → 一朵「停顿云」：词与词之间的落脚点/呼吸点（可站任意点划），略大更好落。
+    if (ch === ' ') {
+      const p = {
+        y: prev.y + lrand(150, 178),
+        cx: clampCx(prev.cx + (lrandom() < 0.5 ? -1 : 1) * lrand(20, 60)),
+        w: Math.min(CLOUD_W_MAX, Math.max(120, vw * 0.44)),
+        winH: 108, kind: 'both',
+        letter: ' ', letterIdx: li, isSpace: true, isLetterEnd: true,
+        hue: 48,
+      };
+      platforms.push(p);
+      prev = p;
+      return;
+    }
+
+    const code = missionMorse(ch);
     code.split('').forEach((sym, si) => {
       const isLetterEnd = si === code.length - 1;
-      const gap = sym === '.' ? rand(105, 145) : rand(220, 250);
+      const gap = sym === '.' ? lrand(105, 145) : lrand(220, 250);
       // 台球玩法：横向拉开，逼玩家瞄准；收束在可视中带内
-      let cx = prev.cx + (Math.random() < 0.5 ? -1 : 1) * rand(40, 96);
-      const anchor = vw / 2;
-      if (Math.abs(cx - anchor) > vw * 0.4) cx = anchor + Math.sign(cx - anchor) * vw * 0.4;
+      const cx = clampCx(prev.cx + (lrandom() < 0.5 ? -1 : 1) * lrand(40, 96));
       const p = {
         y: prev.y + gap,
         cx,
         w: Math.min(CLOUD_W_MAX, Math.max(96, vw * (isLetterEnd ? 0.42 : 0.34))),
         winH: isLetterEnd ? 102 : Math.max(66, CLOUD_WIN_BASE - thin),
         kind: sym === '.' ? 'dot' : 'dash',
-        sym, letter, letterIdx: li, symIdx: si, isLetterEnd,
-        hue: rand(20, 55),
+        sym, letter: ch, letterIdx: li, symIdx: si, isLetterEnd,
+        hue: lrand(20, 55),
       };
       platforms.push(p);
       prev = p;
@@ -349,8 +434,8 @@ const buildMissionLevel = (word, vw) => {
   });
 
   platforms.push({
-    y: prev.y + rand(165, 190),
-    cx: prev.cx + rand(-28, 28),
+    y: prev.y + lrand(165, 190),
+    cx: prev.cx + lrand(-28, 28),
     w: Math.min(CLOUD_W_MAX, Math.max(140, vw * 0.46)),
     winH: 128, kind: 'both', hue: 45, isGoal: true,
   });
@@ -395,6 +480,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
   const [gameMode, setGameMode]         = useState('endless');  // 'endless' | 'mission'
   const [missionWord, setMissionWord]   = useState('');
   const [missionInput, setMissionInput] = useState('');
+  const [missionSeed, setMissionSeed]   = useState(() => (Math.random() * SEED_MAX) | 0);  // 当前布局种子
   const [showMissionPanel, setShowMissionPanel] = useState(false);
   const [secretLevel, setSecretLevel]   = useState(false);      // 关卡码进入：游戏内隐藏原词，通关才揭晓
   const [levelCodeInput, setLevelCodeInput] = useState('');     // B 玩家粘贴的关卡码
@@ -636,29 +722,32 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     const letters = word.split('').map((letter, li) => {
       const startIdx = letterStarts[li];
       const endIdx = (li + 1 < letterStarts.length ? letterStarts[li + 1] : s.platforms.length - 1) - 1;
+      const code = missionMorse(letter);
       return {
         letter,
+        isSpace: letter === ' ',
         done: curIdx > endIdx,
         active: curIdx >= startIdx && curIdx <= endIdx,
-        code: MORSE_MAP[letter] || '',
-        symDone: Math.max(0, Math.min(curIdx - startIdx, (MORSE_MAP[letter] || '').length)),
+        code,
+        symDone: Math.max(0, Math.min(curIdx - startIdx, code.length)),
       };
     });
     setMissionHUD({ letters, lives });
   }, []);
 
-  const reset = useCallback((mode = 'endless', word = '', secret = false) => {
+  const reset = useCallback((mode = 'endless', word = '', secret = false, seed = 0) => {
     const wrap = wrapRef.current;
     const r = wrap?.getBoundingClientRect();
     const vw = r?.width || 360;
     let platforms;
     let mission = null;
     if (mode === 'mission' && word) {
-      const lvl = buildMissionLevel(word, vw);
+      const lvl = buildMissionLevel(word, vw, seed);
       platforms = lvl.platforms;
       mission = {
         word,
         secret,
+        seed,
         letterStarts: lvl.letterStarts,
         totalSyms: lvl.totalSyms,
         curIdx: 1,          // 下一个要落的云 index（0 是起点云）
@@ -694,10 +783,12 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         landed: true,
         blink: 0,
         blinkTimer: rand(2.0, 4.0),
+        aimLean: 0,           // 瞄准倾身 (-1 左 ~ +1 右)，蓄力时朝发射方向倾斜
       },
       jump: null,
       hold: null,
       aimNorm: 0,
+      aimPull: 0,             // 弹弓皮筋拉伸量 0~1，蓄力+偏角越大越明显
       sparks: [],
       rings: [],
       shake: 0,
@@ -750,24 +841,29 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     setMissionWord(word);
     const secret = mode === 'mission' && !!opts.secret;
     setSecretLevel(secret);
-    reset(mode, word, secret);
+    // 任务模式：seed 决定布局。外部传入（破译/重来）则复用，否则随机取一个新布局。
+    const seed = mode === 'mission'
+      ? (Number.isFinite(opts.seed) ? (opts.seed >>> 0) % SEED_MAX : (Math.random() * SEED_MAX) | 0)
+      : 0;
+    setMissionSeed(seed);
+    reset(mode, word, secret, seed);
     setPhase('playing');
     haptic(8);
   }, [reset]);
 
   const startMission = useCallback(() => {
-    const w = missionInput.trim().toUpperCase().replace(/[^A-Z]/g, '');
-    if (w.length < 2 || w.length > 8) {
+    const w = normalizeMessage(missionInput);   // 大写 + 仅保留可编码字符 + 并空格 + 长度校验
+    if (!w) {
       haptic([10, 30, 10]);
       sndInvalid();
       return;
     }
-    startGame('mission', w);
-  }, [missionInput, startGame]);
+    startGame('mission', w, { seed: missionSeed });   // 用当前布局种子 → 与展示的分享码一致
+  }, [missionInput, missionSeed, startGame]);
 
-  /** B 玩家：粘贴关卡码 → 解码 → 进入保密关卡（游戏内不显示原词） */
+  /** B 玩家：粘贴关卡码 → 解码出「单词 + seed」→ 进入保密关卡（复现 A 的布局，不显示原词） */
   const startCodeChallenge = useCallback(() => {
-    const { ok, word } = decodeLevelCode(levelCodeInput);
+    const { ok, word, seed } = decodeLevelCode(levelCodeInput);
     if (!ok) {
       setCodeError('关卡码无效，请检查后重试');
       haptic([10, 30, 10]);
@@ -775,25 +871,34 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       return;
     }
     setCodeError('');
-    startGame('mission', word, { secret: true });
+    startGame('mission', word, { secret: true, seed });
   }, [levelCodeInput, startGame]);
 
-  /** A 玩家当前输入词对应的关卡码（供分享） */
-  const missionCode = useMemo(() => encodeLevelCode(missionInput), [missionInput]);
+  /** A 玩家当前输入词 + 当前布局种子对应的关卡码（供分享，B 解出后逐像素复现同一关卡） */
+  const missionCode = useMemo(
+    () => encodeLevelCode(missionInput, missionSeed),
+    [missionInput, missionSeed],
+  );
+
+  /** 换一个布局：同词换 seed → 关卡与关卡码同时变（仍可被复现） */
+  const rerollMission = useCallback(() => {
+    setMissionSeed((Math.random() * SEED_MAX) | 0);
+    haptic(6);
+  }, []);
 
   /** 复制关卡码到剪贴板 */
   const copyCode = useCallback(() => {
     if (!missionCode) return;
     const done = () => { setCopied(true); haptic(8); setTimeout(() => setCopied(false), 1600); };
+    if (__OFFLINE__) {
+      return;
+    }
     try {
       if (navigator.clipboard?.writeText) {
         navigator.clipboard.writeText(missionCode).then(done, done);
       } else {
-        const ta = document.createElement('textarea');
-        ta.value = missionCode; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); } catch (_) {}
-        document.body.removeChild(ta); done();
+        window.prompt('复制这串关卡码', missionCode);
+        done();
       }
     } catch (_) { done(); }
   }, [missionCode]);
@@ -849,7 +954,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     sndVictory();
     haptic([12, 40, 12, 40, 20]);
     const elapsed = Math.round((performance.now() - s.mission.startTime) / 1000);
-    setMissionResult({ word: s.mission.word, retries: s.mission.retries, time: elapsed, score: s.score, secret: s.mission.secret });
+    setMissionResult({ word: s.mission.word, retries: s.mission.retries, time: elapsed, score: s.score, secret: s.mission.secret, seed: s.mission.seed });
     setRevealed(false);
     // 满屏流星庆祝
     for (let i = 0; i < 80; i++) {
@@ -1011,7 +1116,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     if (!s) return;
     if (!s.character.landed || s.jump) return;
     const px = e?.clientX ?? e?.touches?.[0]?.clientX ?? 0;
-    s.hold = { start: performance.now(), startX: px };
+    s.hold = { start: performance.now(), startX: px, symbol: '.' };
     s.aimNorm = 0;
     haptic(4);
   }, [phase]);
@@ -1027,29 +1132,6 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     s.aimNorm = Math.max(-1, Math.min(1, norm));
   }, [phase]);
 
-  /**
-   * 落台：按鸟的真实 X/高度，落到「紧邻的下一朵云」（含同高度岔路），不可越层。
-   */
-  const findLandingCloud = (s, fromIdx, alt) => {
-    const charX = s.character.x;
-    // 只能落到「紧邻的下一朵云」——不允许越层跳到更高的第二朵。
-    // 用下一朵云的高度作为上限：同高度的岔路云仍可落（分叉），更高的越层云一律排除。
-    const nextP = s.platforms[fromIdx + 1];
-    if (!nextP) return -1;
-    const ceilY = nextP.y + Math.max(nextP.winH / 2, 16);   // 允许略高于下一朵的容错，防止贴边误判
-    let best = -1; let bestGap = Infinity;
-    for (let i = fromIdx + 1; i < Math.min(s.platforms.length, fromIdx + 5); i++) {
-      const p = s.platforms[i];
-      if (!p || p.broken) continue;
-      if (p.y > ceilY) continue;                            // 越层云：不可落
-      if (Math.abs(alt - p.y) > p.winH / 2) continue;
-      if (Math.abs(p.cx - charX) > p.w / 2) continue;
-      const gap = Math.abs(alt - p.y);
-      if (gap < bestGap) { bestGap = gap; best = i; }
-    }
-    return best;
-  };
-
   const onPressUp = useCallback((e) => {
     if (e?.preventDefault) e.preventDefault();
     if (phase !== 'playing') return;
@@ -1062,8 +1144,10 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     setCharge(0);
     s.fragileTimer = 0;
 
-    const sym = ratio < SYMBOL_SPLIT ? '.' : '-';
-    let height = MIN_JUMP_DIST + ratio * (MAX_JUMP_DIST - MIN_JUMP_DIST);
+    const useWinNext = s.skills.winNext;
+    const plan = buildLaunchPlan(s, ratio, useWinNext);
+    const sym = plan.symbol;
+    let height = plan.height;
     let T = 0.52 + ratio * 0.26;
     if (s.skills.moonRemain > 0) {
       height *= 1.28;
@@ -1072,39 +1156,10 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       syncActiveSkillsHUD();
     }
 
-    const useWinNext = s.skills.winNext;
     if (useWinNext) {
-      const target = s.platforms[s.standIdx + 1];
-      if (target) { height = target.y - s.character.alt; T = 0.62; }
+      T = 0.62;
       s.skills.winNext = false;
       syncActiveSkillsHUD();
-    }
-
-    const nextP = s.platforms[s.standIdx + 1];
-
-    // 台球式落点：横向位移由「瞄准角度 × 蓄力」共同决定（跳得越高越远越能拐）
-    const aimNorm = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
-    const reach = 0.45 + 0.55 * ratio;                 // 蓄力越足横向可达越远
-    let dx = aimNorm * AIM_MAX_DX * reach;
-    let x1 = s.character.x + dx;
-
-    // 辅助吸附：若瞄准落点附近正好有一朵在合适高度、朝向一致的云，吸到其圆心
-    if (useWinNext && nextP) {
-      x1 = nextP.cx;                                   // WIN 秘技仍直达
-    } else {
-      let bestIdx = -1; let bestDist = Infinity;
-      for (let i = s.standIdx + 1; i < Math.min(s.platforms.length, s.standIdx + 4); i++) {
-        const p = s.platforms[i];
-        if (!p || p.broken) continue;
-        // 高度要够得着（在这次跳跃能覆盖的纵向范围内）
-        if (p.y <= s.character.alt + 8) continue;
-        if (p.y > s.character.alt + height + 40) continue;
-        const dist = Math.abs(p.cx - x1);
-        if (dist < p.w / 2 + AIM_SNAP_X_PAD && dist < bestDist) {
-          bestDist = dist; bestIdx = i;
-        }
-      }
-      if (bestIdx >= 0) x1 = s.platforms[bestIdx].cx;  // 软吸附到云心
     }
 
     s.jump = {
@@ -1116,7 +1171,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       height, sym,
       fromIdx: s.standIdx,
       x0: s.character.x,
-      x1,
+      x1: plan.x1,
+      targetAlt: plan.next?.y ?? s.character.alt,
     };
     s.character.landed = false;
     s.character.squash = 0;
@@ -1187,8 +1243,21 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       const maxStep = (dt * 1000 / HOLD_RANGE_MS) * 1.04;
       s.smoothCharge = Math.min(target, prev + maxStep);
       setCharge(s.smoothCharge);
+      const chargeSymbol = symbolForCharge(s.smoothCharge, SYMBOL_SPLIT);
+      if (chargeSymbol !== s.hold.symbol) {
+        s.hold.symbol = chargeSymbol;
+        sndTick();
+        haptic([7, 18, 7]);
+      }
       s.character.squash = s.smoothCharge;
-      // 台球式瞄准：角度由手指左右拖动决定（见 onPressMove），此处不再自动摆动
+      // 台球式瞄准：角度由手指左右拖动决定（见 onPressMove），此处不再自动摆动。
+      // 记录瞄准反馈量：猫头鹰朝发射方向（aimNorm 正=右）倾身，身后拉出弹力皮筋。
+      const aim = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
+      s.character.aimLean += (aim - s.character.aimLean) * Math.min(1, dt * 18);
+      s.aimPull = Math.min(1, Math.abs(aim) * (0.4 + s.smoothCharge * 0.6));
+    } else if (Math.abs(s.character.aimLean) > 0.001) {
+      // 松手后倾身平滑归零，避免姿态瞬跳
+      s.character.aimLean += (0 - s.character.aimLean) * Math.min(1, dt * 14);
     }
 
     // 云台运动 + 环境
@@ -1345,6 +1414,12 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       const fromIdx = s.jump.fromIdx;
 
       const handleMiss = () => {
+        const next = s.platforms[fromIdx + 1];
+        if (next) {
+          const delta = next.cx - s.character.x;
+          const direction = Math.abs(delta) < 12 ? '蓄力再多一点' : delta < 0 ? '向左多拉一点' : '向右多拉一点';
+          setFloater({ text: '擦肩而过', sub: direction, color: '#fca5a5', key: now, big: true });
+        }
         s.jump = null;
         if (s.skills.shield) {
           const safe = s.platforms[fromIdx];
@@ -1372,9 +1447,31 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         };
       };
 
-      const handleLand = (hitIdx) => {
+      const handleLand = (landing) => {
+        const hitIdx = landing.index;
         const target = s.platforms[hitIdx];
-        const isPerfect = Math.abs(s.character.alt - target.y) <= PERFECT_TOL_PX;
+        const quality = landingQuality(target, landing.landingX, PERFECT_TOL_PX);
+        const isPerfect = quality === 'perfect';
+        s.character.x = landing.landingX;
+
+        if (!platformAcceptsSymbol(target, sym)) {
+          const required = target.dual ? target.requiredSym : target.kind === 'dot' ? '.' : '-';
+          s.combo = 0;
+          setCombo(0);
+          sndInvalid();
+          haptic([24, 34, 24]);
+          setFloater({
+            text: '电码不匹配',
+            sub: `这里需要 ${required === '.' ? '短按 · 点' : '长按 — 划'}`,
+            color: '#fca5a5',
+            key: now,
+            big: true,
+          });
+          s.character.landed = false;
+          s.jump = null;
+          s.fall = { v: -70, fromAlt: s.character.alt, missionMiss: !!s.mission };
+          return;
+        }
 
         // 尖刺云：用「自然落点 X」判定是否扎到刺侧（在夹紧之前判断）
         if (target.spike && isImpaled(target, s.character.x)) {
@@ -1461,10 +1558,16 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
             s.rings.push(makeRing(s.character.x, target.y, { r1: 46 + Math.min(s.combo, 8) * 6, width: 3, color: heat, life: 0.5 }));
           } else {
             s.combo = 0;
-            gained = 3;
-            sndLand();
-            haptic(8);
-            setFloater({ text: '+3', color: '#f2d27a', key: now, big: true });
+            gained = quality === 'clean' ? 4 : 2;
+            if (quality === 'clean') {
+              sndLand();
+              haptic(8);
+              setFloater({ text: '稳稳落地', sub: `+${gained}`, color: '#f2d27a', key: now, big: true });
+            } else {
+              sndEdge();
+              haptic([5, 18, 5]);
+              setFloater({ text: '擦边抓住', sub: `+${gained}`, color: '#bae6fd', key: now, big: true });
+            }
             s.sparks.push(...spawnFlightTrail(s.character.x, target.y + 4, 0.65));
             s.sparks.push(...spawnDust(s.character.x, target.y, 0.7));
             s.rings.push(makeRing(s.character.x, target.y, { r1: 32, width: 2, color: '226,222,236', life: 0.4 }));
@@ -1480,7 +1583,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
               sndSeal();
               setFloater({
                 text: `✉ ${target.letter}`,
-                sub: prettyMorse(MORSE_MAP[target.letter] || ''),
+                sub: prettyMorse(FULL_MORSE[target.letter] || ''),
                 color: '#f2d27a', key: now + 1,
               });
               s.sparks.push(...spawnSparks(s.character.x, target.y, 45));
@@ -1492,16 +1595,6 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         }
 
         /* ===== 无尽模式 ===== */
-        if (target.dual && sym !== target.requiredSym) {
-          s.combo = 0;
-          setCombo(0);
-          sndInvalid();
-          setFloater({ text: '双频错位', sub: `需要 ${target.requiredSym === '.' ? '·' : '—'}`, color: '#fca5a5', key: now });
-          s.character.landed = false;
-          s.fall = { v: -100, fromAlt: s.character.alt, missionMiss: false };
-          s.jump = null;
-          return;
-        }
         if (target.waxSeal && !isPerfect) {
           s.combo = 0;
           setCombo(0);
@@ -1541,7 +1634,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           });
         }
 
-        let baseGained = 3;
+        let baseGained = quality === 'clean' ? 4 : 2;
         if (isPerfect) {
           s.combo += 1;
           const bonus = Math.min(s.combo - 1, 6);
@@ -1575,9 +1668,15 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         } else {
           s.combo = 0;
           if (skipped <= 0) {
-            sndLand();
-            haptic(8);
-            setFloater({ text: '+3', sub: '落台', color: '#f2d27a', key: now, big: true });
+            if (quality === 'clean') {
+              sndLand();
+              haptic(8);
+              setFloater({ text: '稳稳落地', sub: `+${baseGained}`, color: '#f2d27a', key: now, big: true });
+            } else {
+              sndEdge();
+              haptic([5, 18, 5]);
+              setFloater({ text: '擦边抓住', sub: `+${baseGained}`, color: '#bae6fd', key: now, big: true });
+            }
           }
           s.sparks.push(...spawnFlightTrail(s.character.x, target.y + 4, 0.65));
           s.sparks.push(...spawnDust(s.character.x, target.y, 0.7));
@@ -1658,13 +1757,15 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         }
       } else {
         // 下落：重力加速 + 张翼滑翔接台
+        const previousAlt = s.character.alt;
+        const previousX = s.character.x;
         s.jump.fallV += GRAVITY * dt * (s.skills.moonRemain > 0 ? 0.42 : 0.52);
         s.character.alt -= s.jump.fallV * dt;
         const windX = s.jump.windX || 0;
         const peak = s.jump.peakAlt ?? s.character.alt;
-        const span = Math.max(48, peak - s.jump.alt0);
         const fallen = Math.max(0, peak - s.character.alt);
-        const fp = Math.min(1, fallen / span);
+        const targetFallSpan = Math.max(24, peak - (s.jump.targetAlt ?? s.jump.alt0));
+        const fp = Math.min(1, fallen / targetFallSpan);
         const { x0, x1 } = s.jump;
         // 落点段水平进度接续升空段：0.5→1.0，整段连续，无顶点回跳
         const hp = 0.5 + 0.5 * fp;
@@ -1676,10 +1777,16 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           s.sparks.push(...spawnFlightTrail(s.character.x, s.character.alt - 8, 0.28 + fp * 0.2, comboTrailTint(s.combo)));
         }
 
-        const hitIdx = findLandingCloud(s, fromIdx, s.character.alt);
-        const canLand = s.jump.fallV > 32 || fallen > Math.min(36, span * 0.12);
-        if (hitIdx >= 0 && canLand) {
-          handleLand(hitIdx);
+        const landing = findSweptLanding({
+          platforms: s.platforms,
+          fromIdx,
+          previousAlt,
+          currentAlt: s.character.alt,
+          previousX,
+          currentX: s.character.x,
+        });
+        if (landing) {
+          handleLand(landing);
         } else if (s.character.alt < s.platforms[fromIdx].y - 42) {
           handleMiss();
         }
@@ -1759,8 +1866,10 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     }
   };
 
-  /** 世界海拔 → 屏幕 Y（角色锚定在屏幕 66% 高度处） */
-  const altToScreenY = (s, alt) => s.viewport.h * CHAR_ANCHOR_Y + (s.cameraY - alt);
+  /** 世界海拔 → 屏幕 Y；矮视口自动上移角色，避免被底部操作坞遮挡。 */
+  const altToScreenY = (s, alt) => (
+    s.viewport.h * characterAnchorRatio(s.viewport.h) + (s.cameraY - alt)
+  );
 
   const draw = () => {
     const canvas = canvasRef.current;
@@ -1769,6 +1878,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dprRef.current, 0, 0, dprRef.current, 0, 0);
     const { w, h } = s.viewport;
+    const anchorRatio = characterAnchorRatio(h);
 
     // 夜空：越高越深邃
     const bg = ctx.createLinearGradient(0, 0, 0, h);
@@ -1821,8 +1931,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     ctx.font = '9px JetBrains Mono, monospace';
     ctx.textAlign = 'left';
     const stepW = 500;
-    const topAlt = s.cameraY + h * CHAR_ANCHOR_Y;
-    const botAlt = s.cameraY - h * (1 - CHAR_ANCHOR_Y);
+    const topAlt = s.cameraY + h * anchorRatio;
+    const botAlt = s.cameraY - h * (1 - anchorRatio);
     for (let a = Math.ceil(botAlt / stepW) * stepW; a <= topAlt; a += stepW) {
       if (a <= 0) continue;
       const sy = altToScreenY(s, a);
@@ -1903,89 +2013,29 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       ctx.globalAlpha = 1;
     }
 
-    // 瞄准预览：沿真实起跳轨迹的「光点引导链 + 精致箭头」（贴合抛物路径，更清爽有设计感）
-    if (s.hold && !s.jump && s.character.landed && phase === 'playing') {
-      const ratio = s.smoothCharge ?? 0;
-      const previewSym = ratio < SYMBOL_SPLIT ? '.' : '-';
-      const aimN = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
-      const height = MIN_JUMP_DIST + ratio * (MAX_JUMP_DIST - MIN_JUMP_DIST);
-      const reach = 0.45 + 0.55 * ratio;
-      const dx = aimN * AIM_MAX_DX * reach;          // 真实横向位移（世界=屏幕，1:1）
-      const ox = s.character.x;
-      const birdSy = altToScreenY(s, s.character.alt);
-      const col = previewSym === '-' ? '125,211,252' : '242,210,122';
-
-      // 取真实起跳轨迹的前段形状（k∈[0,0.7]，含拐弯段），等比缩放到固定视觉长度 → 曲率清晰
-      const oy = birdSy - 14;                            // 从鸟头顶上方一点起，避免糊在身上
-      const KPREVIEW = 0.7;
-      const shape = [];
-      for (let k = 0; k <= KPREVIEW + 1e-6; k += 0.02) {
-        const rise = 1 - Math.pow(1 - k, 3);
-        const hp = 0.5 * k;
-        const xE = hp * hp * (3 - 2 * hp);
-        shape.push({ x: dx * xE, y: -height * rise });
-      }
-      const end = shape[shape.length - 1];
-      const rawLen = Math.hypot(end.x, end.y) || 1;
-      const previewLen = 46 + ratio * 34;
-      const sc = previewLen / rawLen;
-      const arc = shape.map((p) => ({ x: ox + p.x * sc, y: oy + p.y * sc }));
-
-      // 按弧长等距重采样，得到均匀的引导点
-      const cum = [0];
-      for (let i = 1; i < arc.length; i++) {
-        cum[i] = cum[i - 1] + Math.hypot(arc[i].x - arc[i - 1].x, arc[i].y - arc[i - 1].y);
-      }
-      const total = cum[cum.length - 1] || 1;
-      const sampleAt = (dist) => {
-        const d = Math.max(0, Math.min(total, dist));
-        let i = 1;
-        while (i < cum.length && cum[i] < d) i++;
-        const p0 = arc[i - 1], p1 = arc[i] || arc[i - 1];
-        const seg = (cum[i] || total) - cum[i - 1] || 1;
-        const t = (d - cum[i - 1]) / seg;
-        return { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
-      };
-
-      const SPACING = 9;
-      const headRoom = 12;                               // 末端留给箭头，避免与点重叠
-      const dotSpan = Math.max(0, total - headRoom);
-      const nDots = Math.max(2, Math.floor(dotSpan / SPACING));
-
-      ctx.save();
-      ctx.shadowColor = `rgba(${col},0.7)`;
-      // 引导光点：由近及远逐渐变大、变亮
-      for (let i = 1; i <= nDots; i++) {
-        const f = i / (nDots + 1);
-        const p = sampleAt(dotSpan * f);
-        const r = 1.3 + 2.0 * f;
-        ctx.shadowBlur = 6 * f + 2;
-        ctx.fillStyle = `rgba(${col},${0.28 + 0.62 * f})`;
+    // 弹弓瞄准反馈：低调方向提示。不画线/箭头，只在「发射方向」一侧漾开一团柔光，
+    // 光团朝发射方向偏移（往左滑=右侧亮），力度越大越亮越偏，配合猫头鹰倾身读出方向。
+    if (s.hold && phase === 'playing') {
+      const aim = Math.max(-1, Math.min(1, s.aimNorm ?? 0));
+      const pull = Math.max(0, Math.min(1, s.aimPull ?? 0));
+      if (Math.abs(aim) > 0.06) {
+        const footY = altToScreenY(s, s.character.alt + (s.character.landOffset || 0));
+        const bx = s.character.x;
+        const dir = Math.sign(aim);              // 发射方向：aim 正=右（往左滑得到）
+        const gx = bx + dir * (12 + pull * 20);  // 光团朝发射方向偏移
+        const gy = footY - 24;
+        const r = 12 + pull * 20;                // 力度越大光团越大
+        const a = 0.12 + pull * 0.26;            // 始终很淡，低调
+        ctx.save();
+        const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+        grad.addColorStop(0, `rgba(255,242,208,${a})`);
+        grad.addColorStop(1, 'rgba(255,242,208,0)');
+        ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.arc(gx, gy, r, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
       }
-
-      // 末端精致「开口箭头」（V 形，与轨迹相切，圆头描边 + 柔光）
-      const tip = arc[arc.length - 1];
-      const prev = sampleAt(total - headRoom);
-      let tvx = tip.x - prev.x, tvy = tip.y - prev.y;
-      const tl = Math.hypot(tvx, tvy) || 1;
-      tvx /= tl; tvy /= tl;
-      const nx = -tvy, ny = tvx;
-      const wingLen = 11, wingW = 6.5;
-      const bx = tip.x - tvx * wingLen, by = tip.y - tvy * wingLen;
-      ctx.shadowBlur = 8;
-      ctx.strokeStyle = `rgba(${col},0.98)`;
-      ctx.lineWidth = 2.6;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(bx + nx * wingW, by + ny * wingW);
-      ctx.lineTo(tip.x, tip.y);
-      ctx.lineTo(bx - nx * wingW, by - ny * wingW);
-      ctx.stroke();
-      ctx.restore();
     }
 
     // 角色
@@ -2012,7 +2062,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
 
     // 大事件金色高光爆闪（PERFECT 里程碑 / 技能 / 登顶）
     if (s.flash > 0) {
-      const fg = ctx.createRadialGradient(w * 0.5, h * CHAR_ANCHOR_Y, 10, w * 0.5, h * CHAR_ANCHOR_Y, Math.max(w, h) * 0.75);
+      const fg = ctx.createRadialGradient(w * 0.5, h * anchorRatio, 10, w * 0.5, h * anchorRatio, Math.max(w, h) * 0.75);
       fg.addColorStop(0, `rgba(255,240,200,${s.flash * 0.5})`);
       fg.addColorStop(0.5, `rgba(242,210,122,${s.flash * 0.22})`);
       fg.addColorStop(1, 'rgba(242,210,122,0)');
@@ -2141,15 +2191,19 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
             <button type="button" onClick={backToMenu}
                     className="text-left btn-tactile inline-flex items-center gap-1.5 rounded-lg"
                     aria-label="返回选关">
+              <SignalOwlIcon className="w-5 h-5 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
               <h2 className="text-[21px] font-semibold leading-snug tracking-wide" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
                 星途信使
               </h2>
               <Home className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" style={{ color: 'var(--gold-300)', opacity: 0.75 }} />
             </button>
           ) : (
-            <h2 className="text-[21px] font-semibold leading-snug tracking-wide" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
-              星途信使
-            </h2>
+            <div className="inline-flex items-center gap-2">
+              <SignalOwlIcon className="w-5 h-5 flex-shrink-0" style={{ color: 'var(--gold-300)' }} />
+              <h2 className="text-[21px] font-semibold leading-snug tracking-wide" style={{ color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+                星途信使
+              </h2>
+            </div>
           )}
           <p className="text-[12px] mt-1 leading-relaxed" style={{ color: 'var(--text-muted)' }}>
             一封未寄出的信 · 乘云而上送往星空
@@ -2243,6 +2297,9 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       {/* 游戏面板 */}
       <div
         ref={wrapRef}
+        role="application"
+        tabIndex={0}
+        aria-label="星途信使游戏区：按住蓄力，左右拖动瞄准，松手起跳。短按为点，长按为划。"
         className="flex-1 min-h-0 rounded-[28px] overflow-hidden relative select-none touch-none"
         style={{
           background: 'var(--surface)',
@@ -2400,6 +2457,16 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1 flex-1 min-w-0 overflow-x-auto no-scrollbar">
                   {missionHUD.letters.map((L, i) => (
+                    L.isSpace ? (
+                      /* 词间停顿：显示一个间隔标记，通过后点亮 */
+                      <div key={i} className="flex items-center shrink-0 px-1"
+                           style={{ opacity: L.done ? 1 : L.active ? 1 : 0.4 }}>
+                        <span className="text-[12px] leading-none"
+                              style={{ color: L.done ? 'var(--gold-300)' : L.active ? '#a7f3d0' : 'var(--text-faint)' }}>
+                          ·
+                        </span>
+                      </div>
+                    ) : (
                     <div key={i} className="flex flex-col items-center px-1.5 py-0.5 rounded-lg shrink-0"
                          style={{
                            background: L.active ? 'rgba(242,210,122,0.14)' : 'transparent',
@@ -2421,6 +2488,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                         ))}
                       </span>
                     </div>
+                    )
                   ))}
                 </div>
                 <div className="flex items-center gap-0.5 shrink-0 pl-2 border-l" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
@@ -2604,6 +2672,12 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           if (gameMode === 'mission' && missionHUD) {
             const L = missionHUD.letters.find((l) => l.active);
             expectedSym = L ? (L.code[L.symDone] || null) : 'any';
+          } else {
+            const s = stateRef.current;
+            const target = s?.platforms?.[s.standIdx + 1];
+            expectedSym = target?.dual
+              ? target.requiredSym
+              : target?.kind === 'dot' ? '.' : target?.kind === 'dash' ? '-' : 'any';
           }
           const curSym = charge < SYMBOL_SPLIT ? '.' : '-';
           const wrongZone = expectedSym && expectedSym !== 'any' && expectedSym !== curSym;
@@ -2674,7 +2748,17 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                 {/* ── 抖音式极简首屏：3 秒看懂，1 键开玩 ── */}
                 <div className="w-full max-w-[min(290px,calc(100vw-2rem))] flex flex-col items-center gap-4 max-h-[min(92vh,640px)] overflow-y-auto overscroll-contain">
                   <div className="flex flex-col items-center gap-1 w-full">
-                    <Sparkles className="w-8 h-8 mb-0.5" style={{ color:'var(--gold-300)' }} aria-hidden="true" />
+                    <div
+                      className="w-14 h-14 mb-1 rounded-2xl flex items-center justify-center"
+                      style={{
+                        color: 'var(--gold-100)',
+                        background: 'radial-gradient(circle at 50% 32%, rgba(242,210,122,0.22), rgba(201,162,74,0.06) 62%, transparent 70%)',
+                        border: '1px solid rgba(201,162,74,0.28)',
+                        boxShadow: '0 0 28px rgba(201,162,74,0.14)',
+                      }}
+                    >
+                      <SignalOwlIcon className="w-10 h-10" strokeWidth={1.55} />
+                    </div>
                     <h3 className="text-[26px] font-semibold tracking-wide text-center leading-none"
                         style={{ color:'var(--text)', fontFamily:'var(--font-display)' }}>
                       星途信使
@@ -2745,17 +2829,17 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                       <div className="flex gap-2">
                         <input
                           type="text"
-                          maxLength={8}
+                          maxLength={MSG_MAX_LEN}
                           value={missionInput}
-                          onChange={(e) => setMissionInput(e.target.value.toUpperCase().replace(/[^A-Za-z]/g, ''))}
+                          onChange={(e) => setMissionInput(e.target.value.toUpperCase())}
                           onKeyDown={(e) => { if (e.key === 'Enter') startMission(); }}
-                          placeholder="LOVE / HOME / DREAM…"
-                          className="flex-1 min-w-0 rounded-xl px-3 py-2 text-[13px] font-mono tracking-[0.15em] outline-none uppercase"
+                          placeholder="LOVE YOU / SEE U @ 8 / GO HOME!…"
+                          className="flex-1 min-w-0 rounded-xl px-3 py-2 text-[13px] font-mono tracking-[0.12em] outline-none uppercase"
                           style={{ background:'rgba(8,7,9,0.5)', border:'1px solid rgba(201,162,74,0.28)',
                                    color:'var(--text)', caretColor:'var(--gold-300)' }}
                         />
                         <button type="button" onClick={startMission}
-                                disabled={missionInput.trim().length < 2}
+                                disabled={!normalizeMessage(missionInput)}
                                 className="btn-tactile px-4 py-2 rounded-xl text-[12px] font-semibold flex-shrink-0 disabled:opacity-40"
                                 style={{ background:'linear-gradient(135deg,#7A5B1F 0%,#C9A24A 50%,#F2D27A 100%)',
                                          color:'#1a1a1a' }}>
@@ -2763,7 +2847,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                         </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
-                        {['LOVE','HOME','STAR','MOON','SNOW','RAIN','DREAM'].map((w) => (
+                        {['LOVE','HOME','SEE U @ 8','GO HOME!','I MISS U','MOON RIVER'].map((w) => (
                           <button key={w} type="button"
                                   onClick={() => setMissionInput(w)}
                                   className="px-2 py-0.5 rounded-full text-[10px] font-mono tracking-widest btn-tactile"
@@ -2774,35 +2858,59 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                           </button>
                         ))}
                       </div>
-                      {missionInput.trim().length >= 2 ? (
-                        <p className="text-[10px] font-mono tracking-[0.2em] text-left break-words" style={{ color:'var(--text-faint)' }}>
-                          {missionInput.trim().toUpperCase().split('').map((ch) =>
-                            `${ch}=${prettyMorse(MORSE_MAP[ch] || '')}`).join('  ')}
-                        </p>
-                      ) : null}
+                      {(() => {
+                        // 预览：整句摩斯（空格显示为词间停顿 /），并提示是否超长
+                        const norm = normalizeMessage(missionInput);
+                        const tooLong = !norm && missionInput.trim().length > MSG_MAX_LEN;
+                        if (tooLong) {
+                          return (
+                            <p className="text-[10px] tracking-[0.08em] text-left" style={{ color:'#f0a8a8' }}>
+                              太长啦，精简到 {MSG_MAX_LEN} 个字符以内～
+                            </p>
+                          );
+                        }
+                        if (!norm) return null;
+                        return (
+                          <p className="text-[10px] font-mono tracking-[0.14em] text-left break-words" style={{ color:'var(--text-faint)' }}>
+                            {norm.split('').map((ch) =>
+                              ch === ' ' ? '/' : `${ch}=${prettyMorse(FULL_MORSE[ch] || '')}`).join('  ')}
+                          </p>
+                        );
+                      })()}
 
                       {/* 生成的加密关卡码：发给朋友，TA 通关才知道你送的是什么 */}
                       {missionCode ? (
                         <div className="mt-1 rounded-xl px-3 py-2.5 flex flex-col gap-2 fade-up-in"
                              style={{ background:'rgba(124,58,237,0.10)', border:'1px solid rgba(167,139,250,0.32)' }}>
-                          <p className="text-[10px] tracking-[0.14em]" style={{ color:'#c4b5fd' }}>
-                            🔐 加密关卡码
+                          <p className="text-[10px] tracking-[0.14em] flex items-center justify-between gap-2" style={{ color:'#c4b5fd' }}>
+                            <span>🔐 加密关卡码</span>
+                            {/* 换布局：同词换一个 seed，关卡与关卡码同时刷新（仍可被对方复现） */}
+                            <button type="button" onClick={rerollMission}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    className="btn-tactile px-2 py-0.5 rounded-full text-[9px] font-semibold flex items-center gap-1"
+                                    style={{ background:'rgba(167,139,250,0.14)', border:'1px solid rgba(167,139,250,0.4)', color:'#ddd6fe' }}>
+                              <RotateCcw className="w-3 h-3" /> 换个布局
+                            </button>
                           </p>
                           <div className="flex items-center gap-2">
                             <code className="flex-1 min-w-0 text-[15px] font-mono font-bold tracking-[0.16em] break-all"
-                                   style={{ color:'#ddd6fe' }}>
+                                   style={{ color:'#ddd6fe', userSelect:'text', WebkitUserSelect:'text' }}>
                               {missionCode}
                             </code>
-                            <button type="button" onClick={copyCode}
-                                    className="btn-tactile px-3 py-1.5 rounded-lg text-[11px] font-semibold flex-shrink-0 flex items-center gap-1"
-                                    style={{ background: copied ? 'rgba(167,243,208,0.18)' : 'rgba(167,139,250,0.18)',
-                                             border:`1px solid ${copied ? 'rgba(167,243,208,0.5)' : 'rgba(167,139,250,0.5)'}`,
-                                             color: copied ? '#a7f3d0' : '#ddd6fe' }}>
-                              {copied ? <><Check className="w-3.5 h-3.5" /> 已复制</> : '复制'}
-                            </button>
+                            {__OFFLINE__ ? (
+                              <span className="text-[10px] flex-shrink-0" style={{ color:'#c4b5fd' }}>长按代码复制</span>
+                            ) : (
+                              <button type="button" onClick={copyCode}
+                                      className="btn-tactile px-3 py-1.5 rounded-lg text-[11px] font-semibold flex-shrink-0 flex items-center gap-1"
+                                      style={{ background: copied ? 'rgba(167,243,208,0.18)' : 'rgba(167,139,250,0.18)',
+                                               border:`1px solid ${copied ? 'rgba(167,243,208,0.5)' : 'rgba(167,139,250,0.5)'}`,
+                                               color: copied ? '#a7f3d0' : '#ddd6fe' }}>
+                                {copied ? <><Check className="w-3.5 h-3.5" /> 已复制</> : '复制'}
+                              </button>
+                            )}
                           </div>
                           <p className="text-[9px] leading-relaxed" style={{ color:'var(--text-faint)' }}>
-                            把这串码发给朋友 · TA「破译关卡码」进入 · 全程看不到原词，通关才揭晓
+                            把这串码发给朋友 · TA「破译关卡码」进入 · 全程看不到原词，通关才揭晓 · 同词每次布局随机，码里已含布局
                           </p>
                         </div>
                       ) : null}
@@ -2958,7 +3066,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                                   backdropFilter:'blur(10px)', boxShadow:'0 10px 40px rgba(124,58,237,0.22)' }}>
                       <p className="text-[10px] tracking-[0.14em]" style={{ color:'#c4b5fd' }}>🔐 加密关卡码</p>
                       <code className="text-[16px] font-mono font-bold tracking-[0.16em] break-all" style={{ color:'#ddd6fe' }}>
-                        {encodeLevelCode(missionResult.word)}
+                        {encodeLevelCode(missionResult.word, missionResult.seed)}
                       </code>
                       <div className="flex justify-center gap-4 pt-1 text-[11px]" style={{ color:'var(--text-muted)' }}>
                         <span>用时 <b style={{ color:'var(--gold-100)' }}>{missionResult.time}s</b></span>
@@ -3004,7 +3112,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
                     {missionResult.word}
                   </p>
                   <p className="text-[10px] font-mono tracking-[0.18em] break-words" style={{ color:'var(--gold-100)' }}>
-                    {missionResult.word.split('').map((ch) => prettyMorse(MORSE_MAP[ch] || '')).join(' / ')}
+                    {missionResult.word.split('').map((ch) => ch === ' ' ? '/' : prettyMorse(FULL_MORSE[ch] || '')).join(' ')}
                   </p>
                   <div className="flex justify-center gap-4 pt-1 text-[11px]" style={{ color:'var(--text-muted)' }}>
                     <span>用时 <b style={{ color:'var(--gold-100)' }}>{missionResult.time}s</b></span>
@@ -3682,6 +3790,16 @@ const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
       ctx.font = 'bold 8px JetBrains Mono, monospace';
       ctx.textAlign = 'center';
       ctx.fillText('▼ 安全', guideX, sy + CLOUD_CORE_H * 0.5 + 32);
+    } else {
+      const required = p.dual ? p.requiredSym : p.kind === 'dash' ? '-' : p.kind === 'dot' ? '.' : null;
+      ctx.fillStyle = `rgba(167,243,208,${0.52 + pulse * 0.35})`;
+      ctx.font = '600 8px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        required === '.' ? '短按 · 点' : required === '-' ? '长按 — 划' : '点 / 划均可',
+        guideX,
+        sy + CLOUD_CORE_H * 0.5 + 32,
+      );
     }
   }
 
@@ -3780,13 +3898,21 @@ const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
   ctx.save();
   ctx.translate(c.x, screenFootY);
   ctx.rotate(c.rot);
-
+  // 瞄准倾身：蓄力时身体朝发射方向（aimLean 正=右）轻微倾斜，
+  // 让「往哪边发射」直接写在角色姿态上，不靠箭头/文字。阴影不受影响，故放在阴影之后再倾。
+  const lean = Math.max(-1, Math.min(1, c.aimLean || 0));
   const shadowAlpha = c.landed && !isGlide ? 0.34 : isGlide ? 0.14 : 0.22;
   const shadowW = cw * 0.5 + Math.min(wingOpen * (isGlide ? 18 : 12), 14);
   ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
   ctx.beginPath();
   ctx.ellipse(0, 5, shadowW, isGlide ? 5 : 4, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  // 阴影画完后再倾身：绕脚底旋转一个小角度 + 顶部微移，形成「侧身蓄势」的体态
+  if (Math.abs(lean) > 0.001) {
+    ctx.rotate(lean * 0.09);         // 含蓄：最多约 5°
+    ctx.transform(1, 0, lean * 0.07, 1, 0, 0);   // 顶部朝发射方向轻推
+  }
 
   if (wingOpen > 0.04) {
     const ws  = cw * (isGlide ? 0.62 + wingOpen * 1.05 : isRise ? 0.62 + wingOpen * 1.12 : 0.50 + wingOpen * 0.94);

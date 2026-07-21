@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>示例曲试听 · music-3.0 人声 + 摩斯分轨</title>
+<style>
+  body{background:#0e0f14;color:#e8e6f0;font:15px/1.6 -apple-system,system-ui,sans-serif;margin:0;padding:32px}
+  h1{font-size:20px;color:#f2d27a;margin:0 0 6px}
+  .sub{color:#9a97ab;font-size:13px;margin-bottom:24px}
+  .card{background:#181a22;border:1px solid #2a2d3a;border-radius:14px;padding:16px 18px;margin:14px 0;max-width:760px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .tag{font-weight:600;color:#f2d27a;font-size:15px}
+  .desc{color:#b9b6c8;font-size:13px}
+  .track{margin-top:12px}
+  .tname{font-size:12px;color:#8b88a0;margin-bottom:3px;display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .d-mix{background:#f2d27a}.d-music{background:#7aa2f2}.d-morse{background:#7af2b8}
+  audio{width:100%;filter:invert(.92) hue-rotate(180deg)}
+  .miss{color:#6a6778;font-style:italic;font-size:13px;margin-top:8px}
+  .legend{font-size:12px;color:#77748a;margin:2px 0 18px}
+</style>
+<h1>🎵 示例曲试听（人声 + 分轨）</h1>
+<div class="sub">music-3.0 <b>带人声</b>文生曲，摩斯动机本地叠回。每首可分开听三条轨。</div>
+<div class="legend">
+  <span class="dot d-mix"></span> 合并成品 (final = 编曲+人声 + 摩斯) ·
+  <span class="dot d-music"></span> AI 编曲/人声轨 (f) ·
+  <span class="dot d-morse"></span> 摩斯动机轨 (x，已增益便于辨认)
+</div>
+<div id="list">加载中…</div>
+<script>
+const JOBS = [
+  ["LOVE_healing_vocal","治愈钢琴 · LOVE 🎹 大钢琴"],
+  ["HERO_synthwave_vocal","合成怀旧 · HERO 🥁 架子鼓"],
+  ["STAR_oriental_vocal","东方禅意 · STAR 🎋 古筝 Koto"],
+  ["HOPE_cinematic_vocal","电影叙事 · HOPE 🔔 管钟 Tubular Bells"],
+  ["MOON_dream_pop_vocal","梦境迷幻 · MOON 💧 卡林巴 Kalimba"],
+  ["FREE_funk_vocal","放克律动 · FREE 🥁 架子鼓"],
+];
+const TRACKS = [
+  ["", "合并成品（编曲 + 人声 + 摩斯动机）", "d-mix"],
+  ["_music", "AI 编曲 + 人声轨（已按动机形态让路）", "d-music"],
+  ["_morse", "摩斯动机轨（真实采样：钢琴🎹 或 架子鼓🥁）", "d-morse"],
+  ["_hookSOLO", "🎹 单动机·裸听（新：延音拖尾，不再戛然而止）", "d-morse"],
+];
+async function head(url){ try{ const r=await fetch(url,{method:'HEAD'}); return r.ok; }catch(e){ return false; } }
+async function build(){
+  const el = document.getElementById('list'); el.innerHTML='';
+  for(const [tag,desc] of JOBS){
+    const card=document.createElement('div'); card.className='card';
+    card.innerHTML = `<div class="row"><span class="tag">${tag}</span><span class="desc">${desc}</span></div>`;
+    const base = `/assets/sample_${tag}`;
+    const mixOk = await head(`${base}.mp3`);
+    if(!mixOk){
+      card.innerHTML += `<div class="miss">尚未生成或生成中…（页面每 20s 自动刷新）</div>`;
+      el.appendChild(card); continue;
+    }
+    for(const [suf,name,cls] of TRACKS){
+      const url = `${base}${suf}.mp3?t=${Date.now()}`;
+      const ok = suf==="" ? true : await head(`${base}${suf}.mp3`);
+      const box=document.createElement('div'); box.className='track';
+      box.innerHTML = `<div class="tname"><span class="dot ${cls}"></span>${name}</div>`
+        + (ok ? `<audio controls preload="none" src="${url}"></audio>`
+              : `<div class="miss">该轨未输出</div>`);
+      card.appendChild(box);
+    }
+    el.appendChild(card);
+  }
+}
+build();
+setInterval(build, 20000);
+</script>

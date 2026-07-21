@@ -36,13 +36,17 @@ class DemoConfig:
     # API 服务器地址：https://api.minimaxi.com
     api_base: str = "https://api.minimaxi.com"
     music_endpoint: str = "/v1/music_generation"
-    # 使用 music-2.6-free 生成音乐（本地混音方案）
-    cover_model: str = "music-2.6-free"
+    # 使用 music-3.0 文生曲（路线 A：AI 编曲 f + 本地叠回摩斯 x，保证摩斯清晰可听）。
+    # 说明：曾用 music-cover 想以摩斯音频做参考，但 cover 需参考音频含可识别人声(ASR+DTW)，
+    #       纯器乐摩斯会报 2013 no lyrics detected，故改走 music-3.0 文生曲。
+    music_model: str = "music-3.0"
     output_format: str = "hex"
     output_sample_rate: int = 44100
     output_bitrate: int = 256_000
     output_audio_format: str = "mp3"
     request_timeout_sec: int = 300
+    # 音乐请求重试次数：首连易遇 TLS/Connection reset 抖动，指数退避重试后即成功
+    music_retries: int = 6
     # 文本对话（M2-her）：用于根据用户名字生成「音乐生成」专用提示词
     text_chat_endpoint: str = "/v1/text/chatcompletion_v2"
     text_model: str = "M2-her"

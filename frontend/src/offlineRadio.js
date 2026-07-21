@@ -2,6 +2,262 @@
 // It lets the offline Interactive Space bundle keep song files and timelines in sync.
 export const OFFLINE_RADIO = [
   {
+    "word": "MI",
+    "sub": "经典电波暗号：M(−−) + I(··) 循环 8 次",
+    "style_label": "碟中谍主题曲",
+    "morse_pretty": "−− / ··",
+    "display_phrase": "Mission: Impossible",
+    "hook_key": "经典主题",
+    "hook_bpm": 0,
+    "letter_timeline": [
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 1600,
+        "end_ms": 2350,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 2450,
+        "end_ms": 3000,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 3200,
+        "end_ms": 3950,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 4050,
+        "end_ms": 4600,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 4800,
+        "end_ms": 5550,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 5650,
+        "end_ms": 6200,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 6400,
+        "end_ms": 7150,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 7250,
+        "end_ms": 7800,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 8000,
+        "end_ms": 8750,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 8850,
+        "end_ms": 9400,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 9600,
+        "end_ms": 10350,
+        "hero_idx": 0,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 10450,
+        "end_ms": 11000,
+        "hero_idx": 9,
+        "dot_effect": "bloom",
+        "dash_effect": "bloom"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 11200,
+        "end_ms": 11950,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 12050,
+        "end_ms": 12600,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 12800,
+        "end_ms": 13550,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 13650,
+        "end_ms": 14200,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 14400,
+        "end_ms": 15150,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 15250,
+        "end_ms": 15800,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 16000,
+        "end_ms": 16750,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 16850,
+        "end_ms": 17400,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 17600,
+        "end_ms": 18350,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 18450,
+        "end_ms": 19000,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "M",
+        "morse": "--",
+        "morse_pretty": "−−",
+        "start_ms": 19200,
+        "end_ms": 19950,
+        "hero_idx": 0,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      },
+      {
+        "letter": "I",
+        "morse": "..",
+        "morse_pretty": "··",
+        "start_ms": 20050,
+        "end_ms": 20600,
+        "hero_idx": 9,
+        "dot_effect": "hit",
+        "dash_effect": "hit"
+      }
+    ],
+    "intro_duration_ms": 21200,
+    "audio_url": "songs/mission.mp3",
+    "demo": true,
+    "demo_caption": "主题曲前奏里 —— M（−−）+ I（··），循环 12 次",
+    "intro_anim_delay_ms": 6000
+  },
+  {
     "word": "LOVE",
     "sub": "把说不出口的爱，敲成一段旋律",
     "style_label": "治愈钢琴",
@@ -103,50 +359,50 @@ export const OFFLINE_RADIO = [
   },
   {
     "word": "STAR",
-    "sub": "许一个愿，让它藏进星海的和弦",
-    "style_label": "梦境迷幻",
+    "sub": "循着古筝的电波，寻你如寻星",
+    "style_label": "东方禅意",
     "morse_pretty": "··· − ·− ·−·",
-    "hook_key": "A 大调五声",
-    "hook_bpm": 76.0,
+    "hook_key": "D 小调五声",
+    "hook_bpm": 80.7,
     "letter_timeline": [
       {
         "letter": "S",
         "morse": "...",
         "morse_pretty": "···",
-        "start_ms": 900.0,
-        "end_ms": 1665.3,
-        "dot_effect": "bloom",
-        "dash_effect": "hit"
+        "start_ms": 952.0,
+        "end_ms": 1866.6,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "T",
         "morse": "-",
         "morse_pretty": "−",
-        "start_ms": 2124.5,
-        "end_ms": 2736.7,
-        "dot_effect": "bloom",
-        "dash_effect": "hit"
+        "start_ms": 2415.4,
+        "end_ms": 3147.1,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "A",
         "morse": ".-",
         "morse_pretty": "·−",
-        "start_ms": 3195.9,
-        "end_ms": 4114.3,
-        "dot_effect": "bloom",
-        "dash_effect": "hit"
+        "start_ms": 3695.9,
+        "end_ms": 4793.4,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "R",
         "morse": ".-.",
         "morse_pretty": "·−·",
-        "start_ms": 4573.5,
-        "end_ms": 5798.0,
-        "dot_effect": "bloom",
-        "dash_effect": "hit"
+        "start_ms": 5342.2,
+        "end_ms": 6805.6,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       }
     ],
-    "intro_duration_ms": 5798,
+    "intro_duration_ms": 6806,
     "audio_url": "songs/star.mp3",
     "demo": false,
     "intro_anim_delay_ms": 0

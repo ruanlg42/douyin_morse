@@ -29,6 +29,13 @@ class StyleSpec:
     key_scale: str = "minor_pent"
     hook_timbre: str = "pluck"
     hook_octave: int = 4
+    # 摩斯动机形态：
+    #   "melodic"    —— 用真实旋律乐器(钢琴/铃/拨弦)演奏音高化 hook；AI 编曲让出中高音区。
+    #   "percussive" —— 用真实架子鼓(GM 鼓组)把点划打成鼓点；AI 编曲鼓组克制、让出节奏骨架与低频。
+    hook_kind: str = "melodic"
+    # 架子鼓套件（仅 hook_kind="percussive" 时生效）：standard / groove / brushed
+    drum_kit: str = "standard"
+    drum_preset: int = 0
 
 
 STYLES: dict[str, StyleSpec] = {
@@ -64,7 +71,7 @@ STYLES: dict[str, StyleSpec] = {
             "全曲纯器乐，不要任何人声。"
         ),
         drum_overlay_db=-12.0,
-        key_root="D", key_scale="minor", hook_timbre="bell", hook_octave=5,
+        key_root="D", key_scale="minor", hook_timbre="tubular-bells", hook_octave=5,
     ),
     "lofi": StyleSpec(
         id="lofi",
@@ -82,6 +89,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-13.0,
         bpm_hint=86,
+        key_root="F", key_scale="major_pent", hook_timbre="epiano", hook_octave=4,
     ),
     "retro8bit": StyleSpec(
         id="retro8bit",
@@ -98,7 +106,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-16.0,
         bpm_hint=128,
-        key_root="E", key_scale="major_pent", hook_timbre="pluck", hook_octave=5,
+        key_root="E", key_scale="major_pent", hook_timbre="music-box", hook_octave=5,
     ),
     "synthwave": StyleSpec(
         id="synthwave",
@@ -115,6 +123,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-14.0,
         bpm_hint=104,
+        hook_kind="percussive", drum_kit="groove", drum_preset=0,
     ),
     "jazz_cafe": StyleSpec(
         id="jazz_cafe",
@@ -130,6 +139,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-13.0,
         bpm_hint=96,
+        key_root="A", key_scale="major_pent", hook_timbre="vibraphone", hook_octave=4,
     ),
     "folk_acoustic": StyleSpec(
         id="folk_acoustic",
@@ -145,6 +155,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-14.0,
         bpm_hint=100,
+        key_root="G", key_scale="major_pent", hook_timbre="guitar", hook_octave=4,
     ),
     "ambient": StyleSpec(
         id="ambient",
@@ -160,6 +171,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-18.0,
         bpm_hint=72,
+        key_root="C", key_scale="major_pent", hook_timbre="celeste", hook_octave=5,
     ),
     "edm": StyleSpec(
         id="edm",
@@ -176,6 +188,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-15.0,
         bpm_hint=122,
+        hook_kind="percussive", drum_kit="groove", drum_preset=0,
     ),
     "funk": StyleSpec(
         id="funk",
@@ -192,6 +205,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-14.0,
         bpm_hint=108,
+        hook_kind="percussive", drum_kit="groove", drum_preset=0,
     ),
     "oriental": StyleSpec(
         id="oriental",
@@ -208,7 +222,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-14.0,
         bpm_hint=82,
-        key_root="D", key_scale="minor_pent", hook_timbre="pluck", hook_octave=4,
+        key_root="D", key_scale="minor_pent", hook_timbre="koto", hook_octave=4,
     ),
     "dream_pop": StyleSpec(
         id="dream_pop",
@@ -225,7 +239,7 @@ STYLES: dict[str, StyleSpec] = {
         ),
         drum_overlay_db=-15.0,
         bpm_hint=98,
-        key_root="A", key_scale="major_pent", hook_timbre="bell", hook_octave=5,
+        key_root="A", key_scale="major_pent", hook_timbre="kalimba", hook_octave=5,
     ),
 }
 
