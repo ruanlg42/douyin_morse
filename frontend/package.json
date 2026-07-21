@@ -8,7 +8,7 @@
     "dev:lan": "node ./node_modules/vite/bin/vite.js --host 0.0.0.0",
     "build": "node ./node_modules/vite/bin/vite.js build",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
-    "test": "node --test src/jumpPhysics.test.js src/jumpCode.test.js"
+    "test": "node --test src/jumpPhysics.test.js src/jumpCode.test.js src/jumpMechanics.test.js"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",

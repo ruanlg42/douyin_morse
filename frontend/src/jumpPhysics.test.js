@@ -60,6 +60,22 @@ test('不会越过下一层误吸到更高平台', () => {
   assert.equal(hit, null);
 });
 
+test('已经消散的云不会形成不可见落点', () => {
+  const platforms = [
+    { y: 0, cx: 100, w: 120 },
+    { y: 120, cx: 100, w: 120, spent: true },
+  ];
+  const hit = findSweptLanding({
+    platforms,
+    fromIdx: 0,
+    previousAlt: 155,
+    currentAlt: 86,
+    previousX: 100,
+    currentX: 100,
+  });
+  assert.equal(hit, null);
+});
+
 test('落点按横向误差区分完美、稳定和擦边', () => {
   const platform = { cx: 100, w: 120 };
   assert.equal(landingQuality(platform, 108), 'perfect');

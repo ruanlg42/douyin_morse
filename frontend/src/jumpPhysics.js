@@ -43,7 +43,7 @@ const nextLayerCandidates = (platforms, fromIdx, layerTolerance = 12) => {
   const out = [];
   for (let i = fromIdx + 1; i < Math.min(platforms.length, fromIdx + 5); i += 1) {
     const platform = platforms[i];
-    if (!platform || platform.broken) continue;
+    if (!platform || platform.broken || platform.spent) continue;
     if (platform.y > first.y + layerTolerance) break;
     if (Math.abs(platform.y - first.y) <= layerTolerance) out.push({ platform, index: i });
   }

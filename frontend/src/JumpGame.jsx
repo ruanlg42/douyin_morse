@@ -18,11 +18,12 @@ import {
   getWordMnemonic, getMissionWordHint,
 } from './jumpDict.js';
 import {
-  SUMMIT_ALT_M, ABBREV_CHALLENGES, diffOfAlt, tierOf, tierLabel,
+  SUMMIT_ALT_M, CLOUD_STAND_LIFE, ABBREV_CHALLENGES, diffOfAlt, tierOf, tierLabel,
   applyPlatformVariant, shouldSpawnSummit, createSummitPlatform,
   windStrength, inFogZone, stormIntensity, spawnMeteor, injectMissionBranch,
   displayKind, resetLevelRng, lrandom, lrand, lchoice,
-  spikeSafeRange, isImpaled,
+  spikeSafeRange, isImpaled, isTimedCloud, tickCloudLife, cloudLifeRatio,
+  restoreCloudRoute,
 } from './jumpMechanics.js';
 
 /* =========================================================
@@ -217,11 +218,46 @@ const AIM_MAX_DX      = 150;    // 满角 + 满蓄力时的最大横向位移（
 const AIM_SNAP_X_PAD  = 26;    // 落点吸附：允许比云半宽多出的横向容差
 
 /* ---------- 角色尺寸 ---------- */
-const OWL_W = 30;
-const OWL_H = 42;
+const OWL_W = 38;
+const OWL_H = 50;
 
 const rand   = (min, max) => min + Math.random() * (max - min);
 const choice = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+/** 激活当前落脚云的统一三秒生命周期，并清理上一朵云残留的计时状态。 */
+const activateCloudTimer = (s, platform) => {
+  if (s.activeCloud && s.activeCloud !== platform) {
+    s.activeCloud.lifeActive = false;
+  }
+  if (!isTimedCloud(platform)) {
+    s.cloudTimer = 0;
+    s.activeCloud = null;
+    return;
+  }
+  platform.broken = false;
+  platform.breakAge = 0;
+  platform.spent = false;
+  platform.spentAge = 0;
+  platform.lifeTotal = CLOUD_STAND_LIFE;
+  platform.lifeRemaining = CLOUD_STAND_LIFE;
+  platform.lifeActive = true;
+  s.cloudTimer = CLOUD_STAND_LIFE;
+  s.activeCloud = platform;
+};
+
+/** 起跳即完成限时要求，离开的云只做身后消散，不再影响玩家。 */
+const releaseCloudTimer = (s, platform, spent = true) => {
+  if (platform) {
+    platform.lifeActive = false;
+    platform.lifeRemaining = 0;
+    if (spent) {
+      platform.spent = true;
+      platform.spentAge = 0;
+    }
+  }
+  s.cloudTimer = 0;
+  s.activeCloud = null;
+};
 
 const buildLaunchPlan = (s, ratio, forceTarget = false) => {
   const symbol = symbolForCharge(ratio, SYMBOL_SPLIT);
@@ -245,7 +281,7 @@ const buildLaunchPlan = (s, ratio, forceTarget = false) => {
     let bestDist = Infinity;
     for (let i = fromIdx + 1; i < Math.min(s.platforms.length, fromIdx + 5); i += 1) {
       const platform = s.platforms[i];
-      if (!platform || platform.broken || Math.abs(platform.y - layerY) > 12) continue;
+      if (!platform || platform.broken || platform.spent || Math.abs(platform.y - layerY) > 12) continue;
       const dist = Math.abs(platform.cx - x1);
       if (dist < platform.w / 2 + AIM_SNAP_X_PAD && dist < bestDist) {
         bestDist = dist;
@@ -309,6 +345,8 @@ const tickCloudMotion = (p, dt) => {
     p.dip = Math.max(-2, Math.min(9, p.dip)); // 限幅，避免异常
     if (Math.abs(p.dip) < 0.06 && Math.abs(p.dipV) < 0.5) { p.dip = 0; p.dipV = 0; }
   }
+  if (p.broken) p.breakAge = (p.breakAge || 0) + dt;
+  if (p.spent) p.spentAge = (p.spentAge || 0) + dt;
 };
 
 const buildInitialPlatforms = (vw) => {
@@ -696,7 +734,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     const ro = new ResizeObserver(resize);
     ro.observe(wrap);
     return () => ro.disconnect();
-  }, []);
+  }, [isActive]);
 
   const syncActiveSkillsHUD = useCallback(() => {
     const s = stateRef.current;
@@ -776,6 +814,9 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         wingOpen: 0,
         wingBurst: 0,
         flapPhase: 0,
+        idleTime: 0,
+        flightProgress: 0,
+        liftVelocity: 0,
         landingEase: 0,
         landOffset: 0,        // 落地吸附缓冲（世界单位，>0 表示仍在落点线上方）
         landOffsetV: 0,       // 缓冲弹簧速度
@@ -815,7 +856,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         abbrevHint: null,
         summitSpawned: false,
       },
-      fragileTimer: 0,
+      cloudTimer: 0,
+      activeCloud: null,
       smoothCharge: 0,
       startTime: performance.now(),
     };
@@ -847,6 +889,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       : 0;
     setMissionSeed(seed);
     reset(mode, word, secret, seed);
+    const s = stateRef.current;
+    activateCloudTimer(s, s?.platforms?.[0]);
     setPhase('playing');
     haptic(8);
   }, [reset]);
@@ -988,6 +1032,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     for (const st of letterStarts) { if (st <= curIdx) letterStart = st; else break; }
     const respawnIdx = Math.max(0, letterStart - 1);
     const p = s.platforms[respawnIdx];
+    restoreCloudRoute(s.platforms, respawnIdx);
     s.mission.curIdx = letterStart;
     s.fall = null;
     s.jump = null;
@@ -999,6 +1044,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     s.character.landed = true;
     s.character.landOffset = 0;
     s.character.landOffsetV = 0;
+    activateCloudTimer(s, p);
     sndRetry();
     haptic([16, 30, 16]);
     setFloater({ text: '⚡ 电报重发', sub: `剩余 ${s.mission.lives} 次机会`, color: '#fca5a5', key: now });
@@ -1142,7 +1188,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     s.hold = null;
     s.smoothCharge = 0;
     setCharge(0);
-    s.fragileTimer = 0;
+    const launchCloud = s.platforms[s.standIdx];
+    releaseCloudTimer(s, launchCloud);
 
     const useWinNext = s.skills.winNext;
     const plan = buildLaunchPlan(s, ratio, useWinNext);
@@ -1179,6 +1226,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     s.character.wingOpen = Math.max(s.character.wingOpen || 0, 0.58);
     s.character.wingBurst = 0.18;
     s.character.pose = 'rise';
+    s.character.flightProgress = 0;
+    s.character.liftVelocity = 1;
     s.character.landingEase = 0;
     s.character.landOffset = 0;
     s.character.landOffsetV = 0;
@@ -1271,18 +1320,34 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
       s.jump.windX = (s.jump.windX || 0) + Math.sin(now / 420) * wind * dt * 0.35;
     }
 
-    // 碎云倒计时
-    if (s.fragileTimer > 0) {
-      s.fragileTimer -= dt;
-      if (s.fragileTimer <= 0) {
-        const stood = s.platforms[s.standIdx];
-        if (stood?.fragile) {
-          stood.broken = true;
-          s.character.landed = false;
-          s.fall = { v: -80, fromAlt: s.character.alt, missionMiss: false };
-          setFloater({ text: '碎云塌陷', sub: '快跳走！', color: '#fca5a5', key: now });
-        }
-        s.fragileTimer = 0;
+    // 所有可站立云统一限时三秒。按住蓄力不会暂停，松手起跳才算及时离开。
+    if (phase === 'playing' && s.cloudTimer > 0
+        && s.character.landed && !s.jump && !s.fall) {
+      const stood = s.activeCloud || s.platforms[s.standIdx];
+      s.cloudTimer = tickCloudLife(s.cloudTimer, dt);
+      if (stood?.lifeActive) stood.lifeRemaining = s.cloudTimer;
+      if (s.cloudTimer <= 0 && stood?.lifeActive) {
+        stood.lifeActive = false;
+        stood.lifeRemaining = 0;
+        stood.broken = true;
+        stood.breakAge = 0;
+        s.activeCloud = null;
+        s.hold = null;
+        s.smoothCharge = 0;
+        s.aimNorm = 0;
+        s.aimPull = 0;
+        setCharge(0);
+        s.character.landed = false;
+        s.character.squash = 0;
+        s.fall = { v: -80, fromAlt: s.character.alt, missionMiss: !!s.mission };
+        setFloater({
+          text: '云已消散',
+          sub: '落地后 3 秒内完成蓄力起跳',
+          color: '#fda4af',
+          key: now,
+          big: true,
+        });
+        haptic([20, 36, 20]);
       }
     }
 
@@ -1341,6 +1406,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     } else if (owlPreview.length) setOwlPreview([]);
 
     if (!s.jump && !s.fall) {
+      s.character.idleTime = (s.character.idleTime || 0) + dt;
       s.character.blinkTimer -= dt;
       if (s.character.blinkTimer <= 0) {
         s.character.blink = 1;
@@ -1430,6 +1496,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           s.character.landOffset = 0;
           s.character.landOffsetV = 0;
           s.standIdx = fromIdx;
+          activateCloudTimer(s, safe);
           s.skills.shield = false;
           syncActiveSkillsHUD();
           sndSkill();
@@ -1511,6 +1578,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         }
         s.standIdx = hitIdx;
         s.character.alt = target.y;
+        activateCloudTimer(s, target);
         // 视觉偏移：从残差起步 + 一点向下冲量 → 欠阻尼回弹出「落地一沉」
         s.character.landOffset = residual;
         s.character.landOffsetV = -6 * impact;
@@ -1600,6 +1668,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           setCombo(0);
           sndInvalid();
           setFloater({ text: '封蜡未闭合', sub: '需 PERFECT', color: '#fca5a5', key: now });
+          releaseCloudTimer(s, target, false);
           s.character.landed = false;
           s.fall = { v: -90, fromAlt: s.character.alt, missionMiss: false };
           s.jump = null;
@@ -1618,7 +1687,6 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           const ab = choice(ABBREV_CHALLENGES);
           setFloater({ text: '中继站', sub: `${ab.word} · ${ab.hint}`, color: '#bae6fd', key: now + 3 });
         }
-        if (target.fragile) s.fragileTimer = 1.15;
         if (target.isSummit) { summitVictory(); return; }
 
         if (skipped > 0) {
@@ -1736,6 +1804,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         s.jump.t += dt;
         const { t, T, alt0, peakAlt, x0, x1 } = s.jump;
         const k = Math.min(1, t / T);
+        s.character.flightProgress = k * 0.5;
+        s.character.liftVelocity = 1 - k;
         const rise = 1 - Math.pow(1 - k, 3);
         s.character.alt = alt0 + (peakAlt - alt0) * rise;
         const windX = s.jump.windX || 0;
@@ -1766,6 +1836,8 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
         const fallen = Math.max(0, peak - s.character.alt);
         const targetFallSpan = Math.max(24, peak - (s.jump.targetAlt ?? s.jump.alt0));
         const fp = Math.min(1, fallen / targetFallSpan);
+        s.character.flightProgress = 0.5 + fp * 0.5;
+        s.character.liftVelocity = -fp;
         const { x0, x1 } = s.jump;
         // 落点段水平进度接续升空段：0.5→1.0，整段连续，无顶点回跳
         const hp = 0.5 + 0.5 * fp;
@@ -1807,6 +1879,7 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
           s.character.rot = 0;
           s.character.landOffset = 0;
           s.character.landOffsetV = 0;
+          activateCloudTimer(s, safe);
         }
       } else {
       s.fall.v += GRAVITY * dt * 0.55;
@@ -1880,12 +1953,20 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     const { w, h } = s.viewport;
     const anchorRatio = characterAnchorRatio(h);
 
-    // 夜空：越高越深邃
+    // 云海夜空：蓝紫纵深 + 月光雾层，让角色像真的在高空穿梭
     const bg = ctx.createLinearGradient(0, 0, 0, h);
-    bg.addColorStop(0, '#0b0a12');
-    bg.addColorStop(0.5, '#12101a');
-    bg.addColorStop(1, '#1d1a20');
+    bg.addColorStop(0, '#06101f');
+    bg.addColorStop(0.48, '#101a31');
+    bg.addColorStop(0.78, '#27213d');
+    bg.addColorStop(1, '#3a2941');
     ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+
+    const aurora = ctx.createRadialGradient(w * 0.12, h * 0.58, 0, w * 0.12, h * 0.58, w * 1.05);
+    aurora.addColorStop(0, 'rgba(87,170,187,0.13)');
+    aurora.addColorStop(0.48, 'rgba(122,93,176,0.08)');
+    aurora.addColorStop(1, 'rgba(10,17,34,0)');
+    ctx.fillStyle = aurora;
     ctx.fillRect(0, 0, w, h);
 
     // 视差星层（两层，伪随机固定星位，随海拔/横向缓慢漂移）
@@ -1908,6 +1989,38 @@ const JumpGame = ({ isActive = true, onOpenLearn }) => {
     };
     drawStars(34, 0.12, 0.9, 0.5);
     drawStars(18, 0.28, 1.4, 0.7);
+
+    // 远景月亮与缓慢漂移的云海，只做视差，不参与碰撞。
+    const moonX = w * 0.78 - xParallax * 0.16;
+    const moonY = h * 0.13;
+    const moonGlow = ctx.createRadialGradient(moonX, moonY, 3, moonX, moonY, 70);
+    moonGlow.addColorStop(0, 'rgba(255,248,221,0.42)');
+    moonGlow.addColorStop(0.25, 'rgba(215,229,255,0.16)');
+    moonGlow.addColorStop(1, 'rgba(190,210,255,0)');
+    ctx.fillStyle = moonGlow;
+    ctx.fillRect(moonX - 74, moonY - 74, 148, 148);
+    ctx.fillStyle = 'rgba(255,248,224,0.78)';
+    ctx.beginPath(); ctx.arc(moonX, moonY, 12, 0, Math.PI * 2); ctx.fill();
+
+    const drawCloudBelt = (baseY, alpha, speed, scale) => {
+      const drift = (Date.now() * speed + s.cameraX * 0.06) % (w + 160);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      for (let i = -1; i < 4; i += 1) {
+        const cx = i * (w * 0.42 + 72) + drift - 110;
+        const cy = baseY + Math.sin(i * 1.7 + s.cameraY * 0.0015) * 12;
+        const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, 74 * scale);
+        g.addColorStop(0, 'rgba(214,226,255,0.52)');
+        g.addColorStop(1, 'rgba(159,181,221,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, 86 * scale, 23 * scale, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+    drawCloudBelt(h * 0.34, 0.18, 0.004, 0.72);
+    drawCloudBelt(h * 0.83, 0.24, -0.006, 1.18);
 
     // 顶部月光晕
     const glow = ctx.createRadialGradient(w * 0.5, -h * 0.1, 10, w * 0.5, -h * 0.1, h * 0.7);
@@ -3617,41 +3730,97 @@ const CLOUD_COLORS = {
 };
 
 const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
+  const breakAge = p.breakAge || 0;
+  const spentAge = p.spentAge || 0;
+  if ((p.broken && breakAge > 1.15) || (p.spent && spentAge > 0.9)) return;
+  ctx.save();
+  const baseAlpha = ctx.globalAlpha;
+  const transitionFade = p.broken
+    ? Math.max(0, 1 - breakAge / 1.15)
+    : p.spent ? Math.max(0, 1 - spentAge / 0.9) : 1;
+  const lifeRatio = p.lifeActive
+    ? cloudLifeRatio(p.lifeRemaining, p.lifeTotal || CLOUD_STAND_LIFE)
+    : 1;
+  const lifeFade = p.lifeActive ? 0.24 + Math.pow(lifeRatio, 0.58) * 0.76 : 1;
+  const vapor = p.lifeActive ? 1 - lifeRatio : p.spent ? Math.min(1, spentAge / 0.9) : 0;
+  const danger = p.lifeActive && p.lifeRemaining <= 0.8;
+  const warningPulse = danger ? 0.5 + 0.5 * Math.sin(Date.now() / 105) : 0;
   const cx = p.cx, w = p.w, winH = p.winH;
-  const visH = Math.max(34, Math.min(winH * 0.6, 52));
+  const visH = Math.max(42, Math.min(winH * 0.68, 62));
   const top = sy - visH / 2;
   const drawKind = kindOverride || p.kind;
   const col = CLOUD_COLORS[drawKind] || CLOUD_COLORS.both;
   const isDash = drawKind === 'dash';
   const isBoth = drawKind === 'both';
 
-  /* ---- 容错窗口雾带（半透明，收窄绘制，保持精致）---- */
+  // 只在最后 0.8 秒出现克制的警戒云缘，传达紧迫感但不遮挡点划与落点。
+  if (danger) {
+    ctx.save();
+    ctx.globalAlpha = baseAlpha * transitionFade;
+    const warning = ctx.createRadialGradient(cx, sy, w * 0.12, cx, sy, w * 0.62);
+    warning.addColorStop(0, 'rgba(251,113,133,0)');
+    warning.addColorStop(0.72, `rgba(251,113,133,${0.035 + warningPulse * 0.035})`);
+    warning.addColorStop(1, 'rgba(251,113,133,0)');
+    ctx.fillStyle = warning;
+    ctx.beginPath();
+    ctx.ellipse(cx, sy, w * 0.62, visH * 0.78, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 云体本身随时间逐渐失去实体感，计时器稍后单独绘制，始终保持清楚。
+  ctx.globalAlpha = baseAlpha * transitionFade * lifeFade;
+
+  /* ---- 容错窗口雾带：是一层空气光，不再像实体胶囊 ---- */
   const mist = ctx.createLinearGradient(0, top, 0, top + visH);
   const mistCol = isDash ? '125,211,252' : isBoth ? '235,228,210' : '242,210,122';
-  mist.addColorStop(0,   `rgba(${mistCol},0.02)`);
-  mist.addColorStop(0.5, `rgba(${mistCol},0.10)`);
-  mist.addColorStop(1,   `rgba(${mistCol},0.02)`);
+  mist.addColorStop(0,   `rgba(${mistCol},0)`);
+  mist.addColorStop(0.5, `rgba(${mistCol},${isNext ? 0.15 : 0.07})`);
+  mist.addColorStop(1,   `rgba(${mistCol},0)`);
   ctx.fillStyle = mist;
-  roundRect(ctx, cx - w / 2, top, w, visH, 14); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cx, sy + 2, w * 0.55, visH * 0.55, 0, 0, Math.PI * 2); ctx.fill();
 
-  /* ---- 云体：三团椭圆叠出蓬松感，中线即完美落点。dip=着陆下压回弹 ---- */
+  /* ---- 云体：多层蓬松轮廓、冷暖边光与柔软下压 ---- */
   const dip = p.dip || 0;
   const puffScale = p.sizeKey === 'narrow' || p.sizeKey === 'drift' ? 0.82
     : p.sizeKey === 'wide' ? 1.14 : 1;
-  const puffColor = (a) => isDash
-    ? `rgba(58, 76, 104, ${a})`
-    : isBoth ? `rgba(78, 74, 66, ${a})` : `rgba(84, 70, 44, ${a})`;
-  ctx.fillStyle = puffColor(0.92);
+  const transitionScatter = p.broken ? breakAge / 1.15 : p.spent ? spentAge / 0.9 : 0;
+  const crumble = (transitionScatter + vapor * 0.34) * 22;
+  const baseRGB = isDash ? '198,222,248' : isBoth ? '239,237,232' : '247,224,174';
+  const shadeRGB = isDash ? '81,121,169' : isBoth ? '128,126,145' : '149,105,73';
+  const puffs = [
+    [-0.37, 0.15, 0.22, 0.38], [-0.22, -0.05, 0.27, 0.56],
+    [0, -0.17, 0.34, 0.72], [0.23, -0.06, 0.29, 0.58],
+    [0.39, 0.15, 0.21, 0.38], [-0.08, 0.18, 0.39, 0.42], [0.19, 0.19, 0.33, 0.40],
+  ];
+  ctx.shadowBlur = isNext ? 22 : 11;
+  ctx.shadowColor = `rgba(${baseRGB},${isNext ? 0.48 : 0.2})`;
+  puffs.forEach(([px, py, prx, pry], idx) => {
+    const dir = idx < 3 ? -1 : 1;
+    const x = cx + px * w * puffScale + dir * crumble * (0.25 + idx * 0.03);
+    const y = sy + py * visH + dip * (0.45 + idx * 0.05) + crumble * (0.12 + (idx % 3) * 0.08);
+    const thin = 1 - vapor * 0.15;
+    const rx = w * prx * puffScale * thin;
+    const ry = visH * pry * 0.52 * thin;
+    const pg = ctx.createRadialGradient(x - rx * 0.2, y - ry * 0.48, 1, x, y, Math.max(rx, ry));
+    pg.addColorStop(0, `rgba(255,255,255,${p.vaporous ? 0.9 : 0.98})`);
+    pg.addColorStop(0.48, `rgba(${baseRGB},0.96)`);
+    pg.addColorStop(1, `rgba(${shadeRGB},0.78)`);
+    ctx.fillStyle = pg;
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.shadowBlur = 0;
+
+  const silverLining = ctx.createLinearGradient(cx - w * 0.4, 0, cx + w * 0.4, 0);
+  silverLining.addColorStop(0, 'rgba(255,255,255,0)');
+  silverLining.addColorStop(0.5, `rgba(${baseRGB},0.9)`);
+  silverLining.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.strokeStyle = silverLining;
+  ctx.lineWidth = isNext ? 2.2 : 1.2;
   ctx.beginPath();
-  ctx.ellipse(cx,            sy + 3 + dip,       w * 0.34 * puffScale, CLOUD_CORE_H * 0.62, 0, 0, Math.PI * 2);
-  ctx.ellipse(cx - w * 0.26, sy + 5 + dip * 0.7, w * 0.20 * puffScale, CLOUD_CORE_H * 0.46, 0, 0, Math.PI * 2);
-  ctx.ellipse(cx + w * 0.26, sy + 5 + dip * 0.7, w * 0.20 * puffScale, CLOUD_CORE_H * 0.46, 0, 0, Math.PI * 2);
-  ctx.fill();
-  // 云顶高光（随中央下压）
-  ctx.fillStyle = puffColor(0.5);
-  ctx.beginPath();
-  ctx.ellipse(cx, sy - 1 + dip * 0.5, w * 0.30, CLOUD_CORE_H * 0.34, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.moveTo(cx - w * 0.36, sy - 2 + dip * 0.5);
+  ctx.quadraticCurveTo(cx, sy - 8 + dip * 0.35, cx + w * 0.36, sy - 2 + dip * 0.5);
+  ctx.stroke();
 
   /* ---- 尖刺云：致命侧长出一排冰锥/尖刺 + 安全侧发光引导 ---- */
   if (p.spike) {
@@ -3740,8 +3909,7 @@ const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
   const tagY = top + 9;
   ctx.font = '7px JetBrains Mono, monospace';
   ctx.textAlign = 'left';
-  if (p.fragile) { ctx.fillStyle = 'rgba(252,165,165,0.85)'; ctx.fillText('碎', cx - w / 2 + 4, tagY); }
-  if (p.listen)  { ctx.fillStyle = 'rgba(196,181,253,0.9)'; ctx.fillText('听', cx - w / 2 + (p.fragile ? 14 : 4), tagY); }
+  if (p.listen)  { ctx.fillStyle = 'rgba(196,181,253,0.9)'; ctx.fillText('听', cx - w / 2 + 4, tagY); }
   if (p.relay)   { ctx.fillStyle = 'rgba(186,230,253,0.9)'; ctx.fillText('中继', cx + w / 2 - 22, tagY); }
   if (p.waxSeal) { ctx.fillStyle = 'rgba(242,210,122,0.9)'; ctx.fillText('蜡', cx + w / 2 - 10, tagY); }
   if (p.spike)   { ctx.fillStyle = 'rgba(252,165,165,0.9)'; ctx.textAlign = 'center'; ctx.fillText('尖刺 · 落安全侧', cx, top - 4); ctx.textAlign = 'left'; }
@@ -3765,6 +3933,62 @@ const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
     ctx.fillStyle = p.branchCorrect ? 'rgba(167,243,208,0.9)' : 'rgba(252,165,165,0.85)';
     ctx.textAlign = 'center';
     ctx.fillText(p.branchCorrect ? '正道' : '岔路', cx, top - 5);
+  }
+  if (p.lifeActive && p.lifeRemaining > 0) {
+    ctx.save();
+    ctx.globalAlpha = baseAlpha * transitionFade;
+    const remain = Math.max(0, p.lifeRemaining);
+    const ratio = cloudLifeRatio(remain, p.lifeTotal || CLOUD_STAND_LIFE);
+    const timerX = cx + Math.min(w * 0.39, w / 2 - 13);
+    const timerY = top - 4;
+    const ringColor = danger
+      ? '251,113,133'
+      : isDash ? '125,211,252' : isBoth ? '255,245,216' : '242,210,122';
+
+    // 深色底盘保证云体逐渐透明后，数字与进度仍然清晰可读。
+    ctx.fillStyle = `rgba(7,12,24,${danger ? 0.8 : 0.66})`;
+    ctx.beginPath(); ctx.arc(timerX, timerY, 13.5, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 2.6;
+    ctx.strokeStyle = 'rgba(255,255,255,0.13)';
+    ctx.beginPath(); ctx.arc(timerX, timerY, 11, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = `rgba(${ringColor},${danger ? 0.98 : 0.9})`;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(timerX, timerY, 11, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+    ctx.stroke();
+    ctx.font = '700 8px JetBrains Mono, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = danger ? '#fecdd3' : '#f8fafc';
+    ctx.fillText(remain.toFixed(1), timerX, timerY + 3);
+
+    // 消散气流跟随剩余时间向两侧拉开，直接把“时间正在流失”画在云体上。
+    ctx.strokeStyle = danger
+      ? `rgba(251,113,133,${0.35 + warningPulse * 0.35})`
+      : `rgba(224,242,254,${0.12 + vapor * 0.36})`;
+    ctx.lineWidth = danger ? 1.35 : 1;
+    for (let i = 0; i < 4; i += 1) {
+      const side = i % 2 ? 1 : -1;
+      const lane = Math.floor(i / 2);
+      const vx = cx + side * (w * (0.31 + lane * 0.06));
+      const vy = sy - 5 + lane * 9;
+      ctx.beginPath();
+      ctx.moveTo(vx, vy);
+      ctx.quadraticCurveTo(
+        vx + side * (7 + vapor * 5),
+        vy - 5,
+        vx + side * (14 + vapor * 12),
+        vy - 9,
+      );
+      ctx.stroke();
+    }
+
+    if (danger) {
+      ctx.font = '600 8px Inter, sans-serif';
+      ctx.fillStyle = `rgba(254,205,211,${0.78 + warningPulse * 0.2})`;
+      ctx.textAlign = 'center';
+      ctx.fillText('快起跳', cx, sy + visH * 0.62 + 13);
+    }
+    ctx.restore();
   }
   if (isNext) {
     const pulse = 0.35 + 0.30 * Math.sin(Date.now() / 260);
@@ -3880,11 +4104,207 @@ const drawCloud = (ctx, p, sy, isNext = false, kindOverride = null) => {
   under.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = under;
   ctx.fillRect(cx - w * 0.36, sy + CLOUD_CORE_H * 0.5, w * 0.72, 16);
+  ctx.restore();
 };
 
 /* ---------- 星途信使（猫头鹰造型）
    screenFootY：脚底所在屏幕 Y ---------- */
 const drawOwl = (ctx, c, screenFootY, hasShield = false) => {
+  const squash = Math.max(-0.16, Math.min(1, c.squash || 0));
+  const pose = c.pose || 'idle';
+  const wingOpen = Math.max(0, Math.min(1, c.wingOpen || 0));
+  const flap = Math.sin(c.flapPhase || 0);
+  const idle = c.idleTime || 0;
+  const airborne = pose === 'rise' || pose === 'glide' || pose === 'tumble';
+  const cw = OWL_W * (1 + squash * 0.16);
+  const ch = OWL_H * (1 - squash * 0.25);
+  const bob = pose === 'idle' ? Math.sin(idle * 2.2) * 1.2 : 0;
+  const lean = Math.max(-1, Math.min(1, c.aimLean || 0));
+
+  ctx.save();
+  ctx.translate(c.x, screenFootY + bob);
+  ctx.rotate(c.rot || 0);
+
+  // 与云面脱离的柔影，升空后自然收小、变淡。
+  const shadowLift = airborne ? Math.min(1, Math.abs(c.liftVelocity || 0) + 0.25) : 0;
+  ctx.fillStyle = `rgba(4,8,18,${0.27 - shadowLift * 0.13})`;
+  ctx.beginPath();
+  ctx.ellipse(0, 5, cw * (0.43 - shadowLift * 0.09), 4.2 - shadowLift, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (Math.abs(lean) > 0.001) {
+    ctx.rotate(lean * 0.105);
+    ctx.transform(1, 0, lean * 0.06, 1, 0, 0);
+  }
+
+  // 尾羽先画在身体后方；滑翔时向上收，落地时张开刹车。
+  const tailSpread = pose === 'land' ? 1 : airborne ? 0.72 : 0.45;
+  for (let i = -1; i <= 1; i += 1) {
+    ctx.save();
+    ctx.translate(i * 4.2 * tailSpread, -4);
+    ctx.rotate(i * 0.13 * tailSpread);
+    const tg = ctx.createLinearGradient(0, -17, 0, 5);
+    tg.addColorStop(0, '#80658f');
+    tg.addColorStop(0.42, '#3a3155');
+    tg.addColorStop(1, '#17152b');
+    ctx.fillStyle = tg;
+    ctx.beginPath();
+    ctx.moveTo(-3.5, -12); ctx.quadraticCurveTo(0, -20, 3.5, -12);
+    ctx.lineTo(2.5, 4); ctx.quadraticCurveTo(0, 7, -2.5, 4); ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(242,210,122,0.28)'; ctx.lineWidth = 0.8; ctx.stroke();
+    ctx.restore();
+  }
+
+  // 翅膀使用连续的展开量和扑动相位；rise → glide → land 不更换离散贴图。
+  const drawWing = (sign) => {
+    if (wingOpen < 0.025) return;
+    const rootX = sign * cw * 0.31;
+    const rootY = -ch * 0.52;
+    const span = cw * (0.38 + wingOpen * (pose === 'glide' ? 1.33 : 1.15));
+    let tipY;
+    if (pose === 'rise') tipY = -ch * (0.62 + wingOpen * 0.2) + flap * (5 + wingOpen * 7);
+    else if (pose === 'glide' || pose === 'tumble') tipY = -ch * 0.47 + flap * 2.2;
+    else if (pose === 'land') tipY = -ch * 0.35 + flap * 3;
+    else tipY = -ch * 0.48 + flap * 4;
+    const tipX = sign * span;
+
+    const wg = ctx.createLinearGradient(rootX, rootY, tipX, tipY);
+    wg.addColorStop(0, '#725d89');
+    wg.addColorStop(0.42, '#45395f');
+    wg.addColorStop(1, '#17162e');
+    ctx.fillStyle = wg;
+    ctx.shadowBlur = airborne ? 9 : 4;
+    ctx.shadowColor = 'rgba(128,150,255,0.22)';
+    ctx.beginPath();
+    ctx.moveTo(rootX, rootY);
+    ctx.bezierCurveTo(
+      sign * span * 0.48, tipY - ch * 0.22,
+      sign * span * 0.88, tipY - ch * 0.12,
+      tipX, tipY,
+    );
+    ctx.bezierCurveTo(
+      sign * span * 0.88, tipY + ch * 0.13,
+      sign * span * 0.52, -ch * 0.12,
+      sign * cw * 0.34, -ch * 0.22,
+    );
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(245,211,127,${0.32 + wingOpen * 0.28})`;
+    ctx.lineWidth = 1.35;
+    ctx.beginPath();
+    ctx.moveTo(rootX, rootY);
+    ctx.bezierCurveTo(sign * span * 0.48, tipY - ch * 0.22, sign * span * 0.88, tipY - ch * 0.12, tipX, tipY);
+    ctx.stroke();
+
+    // 三层主飞羽，末端轻轻分叉，扑翼时仍保持清楚的鸟类轮廓。
+    for (let i = 0; i < 4; i += 1) {
+      const t = (i + 1) / 5;
+      const sx = sign * (cw * 0.28 + (span - cw * 0.28) * t);
+      const sy = rootY + (tipY - rootY) * (0.35 + t * 0.5);
+      ctx.strokeStyle = `rgba(176,155,207,${0.22 + t * 0.17})`;
+      ctx.lineWidth = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(sign * cw * 0.28, -ch * (0.46 - t * 0.16));
+      ctx.quadraticCurveTo(sx * 0.82, sy - 4, sx, sy + 5 + i * 1.3);
+      ctx.stroke();
+    }
+  };
+  drawWing(-1);
+  drawWing(1);
+
+  // 身体：圆润的信使斗篷轮廓，比原先的黑色水滴更有角色感。
+  const body = ctx.createLinearGradient(0, -ch, 0, 3);
+  body.addColorStop(0, '#76617f');
+  body.addColorStop(0.38, '#4c405f');
+  body.addColorStop(1, '#1b1a31');
+  ctx.fillStyle = body;
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = 'rgba(80,60,120,0.32)';
+  ctx.beginPath();
+  ctx.moveTo(0, -ch);
+  ctx.bezierCurveTo(-cw * 0.6, -ch * 0.89, -cw * 0.55, -ch * 0.15, 0, 0);
+  ctx.bezierCurveTo(cw * 0.55, -ch * 0.15, cw * 0.6, -ch * 0.89, 0, -ch);
+  ctx.closePath(); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = 'rgba(245,211,127,0.48)'; ctx.lineWidth = 1.2; ctx.stroke();
+
+  // 胸前绒羽与信使徽章。
+  const chest = ctx.createRadialGradient(0, -ch * 0.33, 1, 0, -ch * 0.33, cw * 0.35);
+  chest.addColorStop(0, 'rgba(239,222,207,0.52)');
+  chest.addColorStop(1, 'rgba(155,122,154,0.05)');
+  ctx.fillStyle = chest;
+  ctx.beginPath(); ctx.ellipse(0, -ch * 0.3, cw * 0.31, ch * 0.25, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(242,210,122,0.62)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-4, -ch * 0.31); ctx.lineTo(0, -ch * 0.25); ctx.lineTo(4, -ch * 0.31); ctx.stroke();
+  ctx.fillStyle = '#d7ae58';
+  roundRect(ctx, -5, -ch * 0.35, 10, 7, 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,245,216,0.7)'; ctx.lineWidth = 0.7;
+  ctx.beginPath(); ctx.moveTo(-4, -ch * 0.34); ctx.lineTo(0, -ch * 0.3); ctx.lineTo(4, -ch * 0.34); ctx.stroke();
+
+  // 心形面盘与耳羽，形成更亲和、可记忆的猫头鹰脸。
+  const faceY = -ch * 0.72;
+  const faceGrad = ctx.createRadialGradient(0, faceY - 3, 1, 0, faceY, cw * 0.5);
+  faceGrad.addColorStop(0, '#fff8e7');
+  faceGrad.addColorStop(0.72, '#d9c7c2');
+  faceGrad.addColorStop(1, '#8d748a');
+  ctx.fillStyle = faceGrad;
+  ctx.beginPath();
+  ctx.moveTo(0, faceY + ch * 0.22);
+  ctx.bezierCurveTo(-cw * 0.56, faceY + ch * 0.04, -cw * 0.47, faceY - ch * 0.22, 0, faceY - ch * 0.12);
+  ctx.bezierCurveTo(cw * 0.47, faceY - ch * 0.22, cw * 0.56, faceY + ch * 0.04, 0, faceY + ch * 0.22);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = '#33283f';
+  ctx.beginPath();
+  ctx.moveTo(-cw * 0.37, -ch * 0.88); ctx.lineTo(-cw * 0.5, -ch * 1.1); ctx.lineTo(-cw * 0.17, -ch * 0.95); ctx.closePath();
+  ctx.moveTo(cw * 0.37, -ch * 0.88); ctx.lineTo(cw * 0.5, -ch * 1.1); ctx.lineTo(cw * 0.17, -ch * 0.95); ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(242,210,122,0.42)'; ctx.lineWidth = 1; ctx.stroke();
+
+  const blinkK = Math.max(0.04, 1 - (c.blink || 0));
+  const eyeY = faceY - 1;
+  const eyeX = cw * 0.215;
+  const eyeR = cw * 0.18;
+  [-1, 1].forEach((sign) => {
+    ctx.fillStyle = '#ffefba';
+    ctx.beginPath(); ctx.ellipse(sign * eyeX, eyeY, eyeR, eyeR * blinkK, 0, 0, Math.PI * 2); ctx.fill();
+    if (blinkK > 0.18) {
+      ctx.fillStyle = '#d79c37';
+      ctx.beginPath(); ctx.ellipse(sign * eyeX + lean * 1.2, eyeY, eyeR * 0.68, eyeR * 0.72, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#10101b';
+      ctx.beginPath(); ctx.ellipse(sign * eyeX + lean * 1.7, eyeY + 0.4, eyeR * 0.34, eyeR * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.beginPath(); ctx.arc(sign * eyeX + lean * 1.7 + 1.1, eyeY - 1.6, 1.15, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+
+  ctx.fillStyle = '#f1b84e';
+  ctx.beginPath(); ctx.moveTo(0, faceY + 4); ctx.lineTo(-4, faceY + 9); ctx.lineTo(0, faceY + 14); ctx.lineTo(4, faceY + 9); ctx.closePath(); ctx.fill();
+
+  // 起跳收爪、落地伸爪，和身体动作处于同一个连续状态机。
+  const legDrop = pose === 'land' ? 5 : airborne ? -1.5 : 2;
+  ctx.strokeStyle = '#c49345'; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+  [-1, 1].forEach((sign) => {
+    ctx.beginPath();
+    ctx.moveTo(sign * 4, -1); ctx.lineTo(sign * 4.8, 2 + legDrop);
+    ctx.moveTo(sign * 4.8, 2 + legDrop); ctx.lineTo(sign * 8, 3 + legDrop);
+    ctx.moveTo(sign * 4.8, 2 + legDrop); ctx.lineTo(sign * 2.3, 4 + legDrop);
+    ctx.stroke();
+  });
+
+  if (hasShield) {
+    const shieldPulse = 0.66 + Math.sin(Date.now() / 180) * 0.12;
+    ctx.strokeStyle = `rgba(167,243,208,${shieldPulse})`;
+    ctx.lineWidth = 1.4; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.ellipse(0, -ch * 0.49, cw * 0.78, ch * 0.68, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+};
+
+// 保留旧造型作版本对照；当前游戏使用上方连续动画的新信使猫头鹰。
+const drawOwlLegacy = (ctx, c, screenFootY, hasShield = false) => {
   const squash = c.squash;
   const cw = OWL_W * (1 + squash * 0.22);
   const ch = OWL_H * (1 - squash * 0.36);

@@ -5,6 +5,37 @@
 
 export const SUMMIT_ALT_M = 3000;
 export const ALT_PER_WORLD = 6;
+export const CLOUD_STAND_LIFE = 3;
+
+/** 终点与天门落地即完成，其余可站立云统一执行三秒停留时限。 */
+export const isTimedCloud = (platform) => (
+  !!platform && !platform.isGoal && !platform.isSummit
+);
+
+/** 帧率无关的倒计时推进，统一钳制到 0，避免低帧率下出现负值或重复超时。 */
+export const tickCloudLife = (remaining, dt) => (
+  Math.max(0, Number(remaining || 0) - Math.max(0, Number(dt || 0)))
+);
+
+export const cloudLifeRatio = (remaining, total = CLOUD_STAND_LIFE) => (
+  Math.max(0, Math.min(1, Number(remaining || 0) / Math.max(0.001, Number(total || CLOUD_STAND_LIFE))))
+);
+
+/** 任务重发时恢复后续云路，避免已经消散的云继续保持不可见或不可碰撞状态。 */
+export const restoreCloudRoute = (platforms, fromIndex = 0) => {
+  if (!Array.isArray(platforms)) return platforms;
+  for (let i = Math.max(0, fromIndex); i < platforms.length; i += 1) {
+    const platform = platforms[i];
+    if (!platform) continue;
+    platform.lifeActive = false;
+    platform.lifeRemaining = 0;
+    platform.spent = false;
+    platform.spentAge = 0;
+    platform.broken = false;
+    platform.breakAge = 0;
+  }
+  return platforms;
+};
 
 export const ABBREV_CHALLENGES = [
   { word: 'SOS', bonus: 80, hint: '求救电文' },
@@ -67,9 +98,9 @@ export const applyPlatformVariant = (p, diff, altM, forceKind) => {
     p.w = Math.min(200, p.w * 1.12);
   }
 
-  // 碎云：落台后 1.1s 消散
-  if (!forceKind && tier >= 2 && lrandom() < 0.06 + diff * 0.12) {
-    p.fragile = true;
+  // 轻薄云：保留更薄的落点窗口与蒸汽质感，但停留时限统一为 3 秒。
+  if (!forceKind && tier >= 1 && lrandom() < 0.10 + diff * 0.16) {
+    p.vaporous = true;
     p.winH = Math.max(40, p.winH * 0.88);
   }
 
@@ -107,7 +138,7 @@ export const applyPlatformVariant = (p, diff, altM, forceKind) => {
   // 尖刺云：一侧长满尖刺，必须落在安全的另一侧；占比随海拔慢慢变大。
   // 不与其它特殊云/漂移云叠加，保证「看准一侧落下」的判断是干净、可预期的。
   if (!forceKind && tier >= 2 && !p.moving
-      && !p.dual && !p.fragile && !p.decoy && !p.relay && !p.listen && !p.waxSeal
+      && !p.dual && !p.vaporous && !p.decoy && !p.relay && !p.listen && !p.waxSeal
       && lrandom() < 0.06 + diff * 0.20) {
     p.spike = true;
     p.spikeSide = lrandom() < 0.5 ? 'left' : 'right';
