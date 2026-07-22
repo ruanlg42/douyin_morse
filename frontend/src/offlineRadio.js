@@ -271,8 +271,8 @@ export const OFFLINE_RADIO = [
         "morse_pretty": "·−··",
         "start_ms": 900.0,
         "end_ms": 2149.9,
-        "dot_effect": "bloom",
-        "dash_effect": "pluck"
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "O",
@@ -280,8 +280,8 @@ export const OFFLINE_RADIO = [
         "morse_pretty": "−−−",
         "start_ms": 2524.9,
         "end_ms": 4274.9,
-        "dot_effect": "bloom",
-        "dash_effect": "pluck"
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "V",
@@ -289,8 +289,8 @@ export const OFFLINE_RADIO = [
         "morse_pretty": "···−",
         "start_ms": 4649.9,
         "end_ms": 5899.8,
-        "dot_effect": "bloom",
-        "dash_effect": "pluck"
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "E",
@@ -298,8 +298,8 @@ export const OFFLINE_RADIO = [
         "morse_pretty": "·",
         "start_ms": 6274.8,
         "end_ms": 6399.8,
-        "dot_effect": "bloom",
-        "dash_effect": "pluck"
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       }
     ],
     "intro_duration_ms": 6900,
@@ -312,47 +312,47 @@ export const OFFLINE_RADIO = [
     "sub": "无论多远，心里都有回家的节拍",
     "style_label": "民谣原声",
     "morse_pretty": "···· −−− −− ·",
-    "hook_key": "A 小调五声",
-    "hook_bpm": 80.7,
+    "hook_key": "G 大调五声",
+    "hook_bpm": 86.1,
     "letter_timeline": [
       {
         "letter": "H",
         "morse": "....",
         "morse_pretty": "····",
-        "start_ms": 900.0,
-        "end_ms": 1950.0,
-        "dot_effect": "crisp",
-        "dash_effect": "pluck"
+        "start_ms": 859.1,
+        "end_ms": 1909.1,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "O",
         "morse": "---",
         "morse_pretty": "−−−",
-        "start_ms": 2400.0,
-        "end_ms": 4500.0,
-        "dot_effect": "crisp",
-        "dash_effect": "pluck"
+        "start_ms": 2359.1,
+        "end_ms": 4459.1,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "M",
         "morse": "--",
         "morse_pretty": "−−",
-        "start_ms": 4950.0,
-        "end_ms": 6300.0,
-        "dot_effect": "crisp",
-        "dash_effect": "pluck"
+        "start_ms": 4909.1,
+        "end_ms": 6259.1,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       },
       {
         "letter": "E",
         "morse": ".",
         "morse_pretty": "·",
-        "start_ms": 6749.9,
-        "end_ms": 6899.9,
-        "dot_effect": "crisp",
-        "dash_effect": "pluck"
+        "start_ms": 6709.0,
+        "end_ms": 6859.0,
+        "dot_effect": "pluck",
+        "dash_effect": "bloom"
       }
     ],
-    "intro_duration_ms": 8100,
+    "intro_duration_ms": 8059,
     "audio_url": "songs/home.mp3",
     "demo": false,
     "intro_anim_delay_ms": 0
@@ -363,14 +363,14 @@ export const OFFLINE_RADIO = [
     "style_label": "东方禅意",
     "morse_pretty": "··· − ·− ·−·",
     "hook_key": "D 小调五声",
-    "hook_bpm": 80.7,
+    "hook_bpm": 92.3,
     "letter_timeline": [
       {
         "letter": "S",
         "morse": "...",
         "morse_pretty": "···",
-        "start_ms": 952.0,
-        "end_ms": 1866.6,
+        "start_ms": 900.0,
+        "end_ms": 1814.6,
         "dot_effect": "pluck",
         "dash_effect": "bloom"
       },
@@ -378,8 +378,8 @@ export const OFFLINE_RADIO = [
         "letter": "T",
         "morse": "-",
         "morse_pretty": "−",
-        "start_ms": 2415.4,
-        "end_ms": 3147.1,
+        "start_ms": 2363.4,
+        "end_ms": 3095.1,
         "dot_effect": "pluck",
         "dash_effect": "bloom"
       },
@@ -387,8 +387,8 @@ export const OFFLINE_RADIO = [
         "letter": "A",
         "morse": ".-",
         "morse_pretty": "·−",
-        "start_ms": 3695.9,
-        "end_ms": 4793.4,
+        "start_ms": 3643.9,
+        "end_ms": 4741.4,
         "dot_effect": "pluck",
         "dash_effect": "bloom"
       },
@@ -396,13 +396,13 @@ export const OFFLINE_RADIO = [
         "letter": "R",
         "morse": ".-.",
         "morse_pretty": "·−·",
-        "start_ms": 5342.2,
-        "end_ms": 6805.6,
+        "start_ms": 5290.2,
+        "end_ms": 6753.6,
         "dot_effect": "pluck",
         "dash_effect": "bloom"
       }
     ],
-    "intro_duration_ms": 6806,
+    "intro_duration_ms": 6754,
     "audio_url": "songs/star.mp3",
     "demo": false,
     "intro_anim_delay_ms": 0
@@ -413,55 +413,55 @@ export const OFFLINE_RADIO = [
     "style_label": "电影叙事",
     "morse_pretty": "−·· ·−· · ·− −−",
     "hook_key": "D 小调",
-    "hook_bpm": 152.0,
+    "hook_bpm": 92.3,
     "letter_timeline": [
       {
         "letter": "D",
         "morse": "-..",
         "morse_pretty": "−··",
-        "start_ms": 900.0,
-        "end_ms": 1900.0,
-        "dot_effect": "hit",
-        "dash_effect": "hit"
+        "start_ms": 835.9,
+        "end_ms": 1835.9,
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "R",
         "morse": ".-.",
         "morse_pretty": "·−·",
-        "start_ms": 2274.9,
-        "end_ms": 3274.9,
-        "dot_effect": "hit",
-        "dash_effect": "hit"
+        "start_ms": 2210.8,
+        "end_ms": 3210.8,
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "E",
         "morse": ".",
         "morse_pretty": "·",
-        "start_ms": 3649.9,
-        "end_ms": 3774.9,
-        "dot_effect": "hit",
-        "dash_effect": "hit"
+        "start_ms": 3585.8,
+        "end_ms": 3710.8,
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "A",
         "morse": ".-",
         "morse_pretty": "·−",
-        "start_ms": 4149.9,
-        "end_ms": 4899.8,
-        "dot_effect": "hit",
-        "dash_effect": "hit"
+        "start_ms": 4085.8,
+        "end_ms": 4835.7,
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       },
       {
         "letter": "M",
         "morse": "--",
         "morse_pretty": "−−",
-        "start_ms": 5274.8,
-        "end_ms": 6399.8,
-        "dot_effect": "hit",
-        "dash_effect": "hit"
+        "start_ms": 5210.7,
+        "end_ms": 6335.7,
+        "dot_effect": "crisp",
+        "dash_effect": "bloom"
       }
     ],
-    "intro_duration_ms": 6900,
+    "intro_duration_ms": 6836,
     "audio_url": "songs/dream.mp3",
     "demo": false,
     "intro_anim_delay_ms": 0
